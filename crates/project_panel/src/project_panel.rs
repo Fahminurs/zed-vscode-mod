@@ -7765,9 +7765,8 @@ impl ProjectPanel {
                         )
                         .on_click(cx.listener(move |_, _, window, cx| {
                             pane.update(cx, |pane, cx| {
-                                if let Some(ix) =
-                                    pane.items().position(|item| item.item_id() == item_id)
-                                {
+                                let ix = pane.items().position(|item| item.item_id() == item_id);
+                                if let Some(ix) = ix {
                                     pane.activate_item(ix, true, true, window, cx);
                                 }
                             });
