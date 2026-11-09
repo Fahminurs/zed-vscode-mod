@@ -3629,6 +3629,54 @@ impl Pane {
                     tab_bar
                 }
             })
+            .end_child({
+                let pane = cx.entity().downgrade();
+                PopoverMenu::new("pane-tab-list")
+                    .trigger_with_tooltip(
+                        IconButton::new("tab-list", IconName::ChevronDown)
+                            .icon_size(IconSize::Small),
+                        Tooltip::text("Open Tabs"),
+                    )
+                    .anchor(Anchor::TopRight)
+                    .menu(move |window, cx| {
+                        let pane = pane.upgrade()?;
+                        Some(ContextMenu::build(
+                            window,
+                            cx,
+                            move |mut menu, window, cx| {
+                                let close_all = CloseAllItems {
+                                    save_intent: None,
+                                    close_pinned: false,
+                                };
+                                menu = menu
+                                    .entry(
+                                        "Close All",
+                                        Some(Box::new(close_all.clone())),
+                                        window.handler_for(&pane, move |pane, window, cx| {
+                                            pane.close_all_items(&close_all, window, cx)
+                                                .detach_and_log_err(cx)
+                                        }),
+                                    )
+                                    .separator();
+                                let titles: Vec<_> = pane
+                                    .read(cx)
+                                    .items()
+                                    .map(|item| item.tab_content_text(0, cx))
+                                    .collect();
+                                for (ix, title) in titles.into_iter().enumerate() {
+                                    menu = menu.entry(
+                                        title,
+                                        None,
+                                        window.handler_for(&pane, move |pane, window, cx| {
+                                            pane.activate_item(ix, true, true, window, cx)
+                                        }),
+                                    );
+                                }
+                                menu
+                            },
+                        ))
+                    })
+            })
     }
 
     fn render_single_row_tab_bar(

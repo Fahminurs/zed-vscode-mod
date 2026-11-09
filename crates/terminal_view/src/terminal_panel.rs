@@ -142,12 +142,25 @@ impl TerminalPanel {
                     return (None, None);
                 }
                 let focus_handle = pane.focus_handle(cx);
+                let more_focus_handle = focus_handle.clone();
                 let right_children = h_flex()
                     .gap(DynamicSpacing::Base02.rems(cx))
                     .child(
+                        IconButton::new("plus", IconName::Plus)
+                            .icon_size(IconSize::Small)
+                            .tooltip(Tooltip::text("New Terminal"))
+                            .on_click(|_, window, cx| {
+                                window.dispatch_action(
+                                    workspace::NewTerminal::default().boxed_clone(),
+                                    cx,
+                                );
+                            }),
+                    )
+                    .child(
                         PopoverMenu::new("terminal-tab-bar-popover-menu")
                             .trigger_with_tooltip(
-                                IconButton::new("plus", IconName::Plus).icon_size(IconSize::Small),
+                                IconButton::new("new-terminal-chevron", IconName::ChevronDown)
+                                    .icon_size(IconSize::XSmall),
                                 Tooltip::text("New…"),
                             )
                             .anchor(Anchor::TopRight)
@@ -202,23 +215,44 @@ impl TerminalPanel {
                                 }
                             }),
                     )
-                    .child({
-                        let zoomed = pane.is_zoomed();
-                        IconButton::new("toggle_zoom", IconName::Maximize)
+                    .child(
+                        IconButton::new("kill-terminal", IconName::Trash)
                             .icon_size(IconSize::Small)
-                            .toggle_state(zoomed)
-                            .selected_icon(IconName::Minimize)
+                            .tooltip(Tooltip::text("Kill Terminal"))
                             .on_click(cx.listener(|pane, _, window, cx| {
-                                pane.toggle_zoom(&workspace::ToggleZoom, window, cx);
-                            }))
-                            .tooltip(move |_window, cx| {
-                                Tooltip::for_action(
-                                    if zoomed { "Zoom Out" } else { "Zoom In" },
-                                    &ToggleZoom,
+                                pane.close_active_item(
+                                    &workspace::pane::CloseActiveItem::default(),
+                                    window,
                                     cx,
                                 )
-                            })
-                    })
+                                .detach_and_log_err(cx);
+                            })),
+                    )
+                    .child(
+                        PopoverMenu::new("terminal-tab-bar-more")
+                            .trigger_with_tooltip(
+                                IconButton::new("terminal-more", IconName::Ellipsis)
+                                    .icon_size(IconSize::Small),
+                                Tooltip::text("More Actions…"),
+                            )
+                            .anchor(Anchor::TopRight)
+                            .menu(move |window, cx| {
+                                let focus_handle = more_focus_handle.clone();
+                                Some(ContextMenu::build(window, cx, |menu, _, _| {
+                                    menu.context(focus_handle.clone())
+                                        .action("Toggle Zoom", ToggleZoom.boxed_clone())
+                                        .action(
+                                            "Close Other Terminals",
+                                            workspace::pane::CloseOtherItems::default()
+                                                .boxed_clone(),
+                                        )
+                                        .action(
+                                            "Kill All Terminals",
+                                            workspace::pane::CloseAllItems::default().boxed_clone(),
+                                        )
+                                }))
+                            }),
+                    )
                     .into_any_element()
                     .into();
                 (None, right_children)
@@ -1503,13 +1537,42 @@ impl Render for TerminalPanel {
                 )
                 .child(Label::new(label).color(Color::Muted))
         });
+        // VS Code-style vertical terminal list on the right, shown for 2+ terminals.
+        let terminal_list = {
+            let pane = self.active_pane.read(cx);
+            (pane.items_len() > 1).then(|| {
+                let active_ix = pane.active_item_index();
+                v_flex()
+                    .w(px(40.))
+                    .h_full()
+                    .flex_none()
+                    .items_center()
+                    .gap_1()
+                    .py_1()
+                    .border_l_1()
+                    .border_color(cx.theme().colors().border)
+                    .children(pane.items().enumerate().map(|(ix, item)| {
+                        let pane = self.active_pane.clone();
+                        IconButton::new(("terminal-list-item", ix), IconName::Terminal)
+                            .icon_size(IconSize::Small)
+                            .toggle_state(ix == active_ix)
+                            .tooltip(Tooltip::text(item.tab_content_text(0, cx)))
+                            .on_click(move |_, window, cx| {
+                                pane.update(cx, |pane, cx| {
+                                    pane.activate_item(ix, true, true, window, cx)
+                                });
+                            })
+                    }))
+            })
+        };
         self.workspace
             .update(cx, |workspace, cx| {
                 registrar
                     .track_focus(&self.focus_handle)
                     .size_full()
                     .relative()
-                    .child(self.center.render(
+                    .flex()
+                    .child(div().flex_1().h_full().min_w_0().child(self.center.render(
                         workspace.zoomed_item(),
                         None,
                         &workspace::PaneRenderContext {
@@ -1522,7 +1585,8 @@ impl Render for TerminalPanel {
                         },
                         window,
                         cx,
-                    ))
+                    )))
+                    .children(terminal_list)
                     .children(restoring_placeholder)
             })
             .ok()

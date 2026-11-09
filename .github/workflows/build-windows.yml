@@ -23,6 +23,8 @@ jobs:
 
       # Reuses compiled dependencies between runs, so later builds are much faster.
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
 
       - name: Build
         run: cargo build --release -p zed

@@ -139,7 +139,46 @@ impl Render for QuickActionBar {
         let minimap_enabled = supports_minimap && editor_value.minimap().is_some();
         let has_available_code_actions = editor_value.has_available_code_actions_for_selection();
         let code_action_enabled = editor_value.code_actions_enabled_for_toolbar(cx);
+        let soft_wrap_enabled = !matches!(editor_value.soft_wrap_mode(cx), editor::SoftWrap::None);
         let focus_handle = editor_value.focus_handle(cx);
+
+        let soft_wrap_button = QuickActionBarButton::new(
+            "toggle soft wrap",
+            IconName::TextWrap,
+            soft_wrap_enabled,
+            editor::actions::ToggleSoftWrap.boxed_clone(),
+            focus_handle.clone(),
+            "Word Wrap",
+            {
+                let editor = editor.downgrade();
+                move |_, window, cx| {
+                    editor
+                        .update(cx, |editor, cx| {
+                            editor.toggle_soft_wrap(&editor::actions::ToggleSoftWrap, window, cx)
+                        })
+                        .ok();
+                }
+            },
+        );
+
+        let minimap_button = QuickActionBarButton::new(
+            "toggle minimap",
+            IconName::ListTree,
+            minimap_enabled,
+            editor::actions::ToggleMinimap.boxed_clone(),
+            focus_handle.clone(),
+            "Minimap",
+            {
+                let editor = editor.downgrade();
+                move |_, window, cx| {
+                    editor
+                        .update(cx, |editor, cx| {
+                            editor.toggle_minimap(&editor::actions::ToggleMinimap, window, cx)
+                        })
+                        .ok();
+                }
+            },
+        );
 
         let search_button = (editor.buffer_kind(cx) == ItemBufferKind::Singleton).then(|| {
             QuickActionBarButton::new(
@@ -706,6 +745,8 @@ impl Render for QuickActionBar {
         h_flex()
             .id("quick action bar")
             .gap(DynamicSpacing::Base01.rems(cx))
+            .child(soft_wrap_button)
+            .child(minimap_button)
             .children(self.render_repl_menu(cx))
             .children(self.render_preview_button(cx))
             .children(search_button)

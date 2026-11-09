@@ -9717,7 +9717,7 @@ impl Element for EditorElement {
                         cx,
                     );
 
-                    let test_indicators = if gutter_settings.runnables {
+                    let mut test_indicators = if gutter_settings.runnables {
                         self.layout_run_indicators(
                             &gutter,
                             &run_indicator_rows,
@@ -9728,6 +9728,39 @@ impl Element for EditorElement {
                     } else {
                         Vec::new()
                     };
+
+                    // ✨ button on the first selected line opens Inline Assist (VS Code-style).
+                    test_indicators.extend(self.editor.update(cx, |editor, cx| {
+                        if project::DisableAiSettings::get_global(cx).disable_ai {
+                            return None;
+                        }
+                        let selection = editor
+                            .selections
+                            .newest_display(&gutter.snapshot.display_snapshot);
+                        if selection.is_empty() {
+                            return None;
+                        }
+                        gutter.layout_item(
+                            selection.start.row(),
+                            |_, _| {
+                                IconButton::new("ai_selection_assist", IconName::Sparkle)
+                                    .icon_size(IconSize::XSmall)
+                                    .icon_color(Color::Accent)
+                                    .tooltip(Tooltip::text("Inline Assist"))
+                                    .on_click(|_, window, cx| {
+                                        window.dispatch_action(
+                                            Box::new(zed_actions::assistant::InlineAssist {
+                                                prompt: None,
+                                            }),
+                                            cx,
+                                        )
+                                    })
+                                    .into_any_element()
+                            },
+                            window,
+                            cx,
+                        )
+                    }));
 
                     let show_bookmarks =
                         snapshot.show_bookmarks.unwrap_or(gutter_settings.bookmarks);

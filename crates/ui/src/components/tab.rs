@@ -109,20 +109,13 @@ impl ParentElement for Tab {
 impl RenderOnce for Tab {
     #[allow(refining_impl_trait)]
     fn render(self, _: &mut Window, cx: &mut App) -> Stateful<Div> {
-        let (text_color, tab_bg, _tab_hover_bg, _tab_active_bg) = match self.selected {
-            false => (
-                cx.theme().colors().text_muted,
-                cx.theme().colors().tab_inactive_background,
-                cx.theme().colors().ghost_element_hover,
-                cx.theme().colors().ghost_element_active,
-            ),
-            true => (
-                cx.theme().colors().text,
-                cx.theme().colors().tab_active_background,
-                cx.theme().colors().element_hover,
-                cx.theme().colors().element_active,
-            ),
+        let colors = cx.theme().colors();
+        let (text_color, pill_bg) = match self.selected {
+            false => (colors.text_muted, gpui::transparent_black()),
+            true => (colors.text, colors.element_selected),
         };
+        let hover_bg = colors.ghost_element_hover;
+        let _ = self.position;
 
         let (start_slot, end_slot) = {
             let start_slot = h_flex()
@@ -141,36 +134,22 @@ impl RenderOnce for Tab {
             }
         };
 
+        let container_height = Tab::container_height(cx);
         self.div
-            .h(Tab::container_height(cx))
-            .bg(tab_bg)
-            .border_color(cx.theme().colors().border)
-            .map(|this| match self.position {
-                TabPosition::First => {
-                    if self.selected {
-                        this.pl_px().border_r_1().pb_px()
-                    } else {
-                        this.pl_px().pr_px().border_b_1()
-                    }
-                }
-                TabPosition::Last => {
-                    if self.selected {
-                        this.border_l_1().border_r_1().pb_px()
-                    } else {
-                        this.pl_px().border_b_1().border_r_1()
-                    }
-                }
-                TabPosition::Middle(Ordering::Equal) => this.border_l_1().border_r_1().pb_px(),
-                TabPosition::Middle(Ordering::Less) => this.border_l_1().pr_px().border_b_1(),
-                TabPosition::Middle(Ordering::Greater) => this.border_r_1().pl_px().border_b_1(),
-            })
+            .h(container_height)
+            .px(px(2.))
+            .flex()
+            .items_center()
             .cursor_pointer()
             .child(
                 h_flex()
                     .group("")
                     .relative()
-                    .h(Tab::content_height(cx))
-                    .px(DynamicSpacing::Base04.px(cx))
+                    .h(container_height - px(8.))
+                    .rounded(px(8.))
+                    .bg(pill_bg)
+                    .when(!self.selected, |this| this.hover(|s| s.bg(hover_bg)))
+                    .px(DynamicSpacing::Base06.px(cx))
                     .gap(DynamicSpacing::Base04.rems(cx))
                     .text_color(text_color)
                     .child(start_slot)
