@@ -413,6 +413,7 @@ impl Render for TitleBar {
                             ),
                     )
                 })
+                .child(self.render_layout_toggles(cx))
                 .when(TitleBarSettings::get_global(cx).show_user_menu, |this| {
                     this.child(self.render_user_menu_button(cx))
                 })
@@ -458,6 +459,83 @@ impl Render for TitleBar {
 }
 
 impl TitleBar {
+    /// VS Code style layout controls: toggle the primary side bar (left dock),
+    /// the panel (bottom dock) and the secondary side bar (right dock).
+    fn render_layout_toggles(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let (left, bottom, right) = self
+            .workspace
+            .upgrade()
+            .map(|workspace| {
+                let workspace = workspace.read(cx);
+                (
+                    workspace.left_dock().read(cx).is_open(),
+                    workspace.bottom_dock().read(cx).is_open(),
+                    workspace.right_dock().read(cx).is_open(),
+                )
+            })
+            .unwrap_or_default();
+        h_flex()
+            .gap_0p5()
+            .child(
+                IconButton::new(
+                    "layout-toggle-left",
+                    if left {
+                        IconName::ThreadsSidebarLeftOpen
+                    } else {
+                        IconName::ThreadsSidebarLeftClosed
+                    },
+                )
+                .icon_size(IconSize::Small)
+                .aria_label("Toggle Primary Side Bar")
+                .tooltip(|_window, cx| {
+                    Tooltip::for_action("Toggle Primary Side Bar", &workspace::ToggleLeftDock, cx)
+                })
+                .on_click(|_, window, cx| {
+                    window.dispatch_action(workspace::ToggleLeftDock.boxed_clone(), cx)
+                }),
+            )
+            .child(
+                IconButton::new(
+                    "layout-toggle-bottom",
+                    if bottom {
+                        IconName::PanelBottomOpen
+                    } else {
+                        IconName::PanelBottomClosed
+                    },
+                )
+                .icon_size(IconSize::Small)
+                .aria_label("Toggle Panel")
+                .tooltip(|_window, cx| {
+                    Tooltip::for_action("Toggle Panel", &workspace::ToggleBottomDock, cx)
+                })
+                .on_click(|_, window, cx| {
+                    window.dispatch_action(workspace::ToggleBottomDock.boxed_clone(), cx)
+                }),
+            )
+            .child(
+                IconButton::new(
+                    "layout-toggle-right",
+                    if right {
+                        IconName::ThreadsSidebarRightOpen
+                    } else {
+                        IconName::ThreadsSidebarRightClosed
+                    },
+                )
+                .icon_size(IconSize::Small)
+                .aria_label("Toggle Secondary Side Bar")
+                .tooltip(|_window, cx| {
+                    Tooltip::for_action(
+                        "Toggle Secondary Side Bar",
+                        &workspace::ToggleRightDock,
+                        cx,
+                    )
+                })
+                .on_click(|_, window, cx| {
+                    window.dispatch_action(workspace::ToggleRightDock.boxed_clone(), cx)
+                }),
+            )
+    }
+
     pub fn new(
         id: impl Into<ElementId>,
         workspace: &Workspace,
@@ -492,6 +570,13 @@ impl TitleBar {
             }),
         );
 
+        for dock in [
+            workspace.left_dock().clone(),
+            workspace.bottom_dock().clone(),
+            workspace.right_dock().clone(),
+        ] {
+            subscriptions.push(cx.observe(&dock, |_, _, cx| cx.notify()));
+        }
         subscriptions.push(cx.observe(&active_call, |this, _, cx| this.active_call_changed(cx)));
         subscriptions.push(
             cx.subscribe(&git_store, move |_, _, event, cx| match event {

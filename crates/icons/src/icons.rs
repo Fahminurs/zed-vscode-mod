@@ -204,6 +204,8 @@ pub enum IconName {
     Option,
     PageDown,
     PageUp,
+    PanelBottomClosed,
+    PanelBottomOpen,
     Paperclip,
     Pencil,
     PencilUnavailable,

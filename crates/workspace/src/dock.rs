@@ -1382,6 +1382,138 @@ impl Render for Dock {
     }
 }
 
+/// VS Code style "Activity Bar": a vertical strip of panel icons shown at the far
+/// left of the window. Clicking an icon opens that panel in the dock; clicking the
+/// icon of the panel that is already open collapses the dock.
+pub struct ActivityBar {
+    dock: Entity<Dock>,
+    _settings_subscription: Subscription,
+}
+
+impl ActivityBar {
+    pub fn new(dock: Entity<Dock>, cx: &mut Context<Self>) -> Self {
+        cx.observe(&dock, |_, _, cx| cx.notify()).detach();
+        let settings_subscription = cx.observe_global::<SettingsStore>(|_, cx| cx.notify());
+        Self {
+            dock,
+            _settings_subscription: settings_subscription,
+        }
+    }
+}
+
+impl Render for ActivityBar {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = cx.theme().colors();
+        let bar_background = colors.title_bar_background;
+        let border = colors.border;
+        let active_marker = colors.text;
+        let inactive_marker = gpui::transparent_black();
+
+        let dock = self.dock.read(cx);
+        let active_index = dock.active_panel_index;
+        let is_open = dock.is_open;
+
+        let buttons: Vec<_> = dock
+            .panel_entries
+            .iter()
+            .enumerate()
+            .filter_map(|(i, entry)| {
+                let icon = entry.panel.icon(window, cx)?;
+                let tooltip: SharedString = entry.panel.icon_tooltip(window, cx)?.into();
+                let is_active = Some(i) == active_index && is_open;
+                let action = if is_active {
+                    dock.toggle_action()
+                } else {
+                    entry.panel.toggle_action(window, cx)
+                };
+                let focus_handle = dock.panel_button_focus_handle(window, cx);
+                Some(
+                    div()
+                        .w_full()
+                        .h(px(44.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .border_l_2()
+                        .border_color(if is_active {
+                            active_marker
+                        } else {
+                            inactive_marker
+                        })
+                        .child(
+                            IconButton::new(("activity-bar", i), icon)
+                                .icon_size(IconSize::Medium)
+                                .icon_color(if is_active {
+                                    Color::Default
+                                } else {
+                                    Color::Muted
+                                })
+                                .aria_label(tooltip.clone())
+                                .tooltip(Tooltip::text(tooltip))
+                                .on_click(move |_, window, cx| {
+                                    window.focus(&focus_handle, cx);
+                                    window.dispatch_action(action.boxed_clone(), cx)
+                                }),
+                        )
+                        .into_any_element(),
+                )
+            })
+            .collect();
+
+        v_flex()
+            .id("activity-bar")
+            .h_full()
+            .w(px(48.))
+            .flex_none()
+            .bg(bar_background)
+            .border_r_1()
+            .border_color(border)
+            .pt_1()
+            .children(buttons)
+            .child(
+                div()
+                    .w_full()
+                    .h(px(44.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .border_l_2()
+                    .border_color(inactive_marker)
+                    .child(
+                        IconButton::new("activity-bar-extensions", IconName::Blocks)
+                            .icon_size(IconSize::Medium)
+                            .icon_color(Color::Muted)
+                            .aria_label("Extensions")
+                            .tooltip(Tooltip::text("Extensions"))
+                            .on_click(|_, window, cx| {
+                                window.dispatch_action(
+                                    zed_actions::Extensions::default().boxed_clone(),
+                                    cx,
+                                )
+                            }),
+                    ),
+            )
+            .child(div().flex_1())
+            .child(
+                div()
+                    .w_full()
+                    .h(px(44.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        IconButton::new("activity-bar-settings", IconName::Settings)
+                            .icon_size(IconSize::Medium)
+                            .icon_color(Color::Muted)
+                            .tooltip(Tooltip::text("Settings"))
+                            .on_click(|_, window, cx| {
+                                window.dispatch_action(zed_actions::OpenSettings.boxed_clone(), cx)
+                            }),
+                    ),
+            )
+    }
+}
+
 impl PanelButtons {
     pub fn new(dock: Entity<Dock>, cx: &mut Context<Self>) -> Self {
         cx.observe(&dock, |_, _, cx| cx.notify()).detach();
