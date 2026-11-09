@@ -105,6 +105,8 @@ pub struct SearchPanel {
     files: Vec<FileResult>,
     collapsed: HashSet<usize>,
     entries: Vec<Entry>,
+    /// Last opened match (file_ix, match_ix), highlighted on the overview strip.
+    active_match: Option<(usize, usize)>,
     match_count: usize,
     status: Status,
     pending_search: Option<Task<()>>,
@@ -186,6 +188,7 @@ impl SearchPanel {
                 files: Vec::new(),
                 collapsed: HashSet::default(),
                 entries: Vec::new(),
+                active_match: None,
                 match_count: 0,
                 status: Status::Idle,
                 pending_search: None,
@@ -233,6 +236,7 @@ impl SearchPanel {
         self.collapsed.clear();
         self.collapsed_dirs.clear();
         self.entries.clear();
+        self.active_match = None;
         self.match_count = 0;
     }
 
@@ -434,6 +438,8 @@ impl SearchPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.active_match = Some((file_ix, match_ix));
+        cx.notify();
         let Some(file) = self.files.get(file_ix) else {
             return;
         };
@@ -798,6 +804,31 @@ impl Render for SearchPanel {
         let entries_len = self.entries.len();
         let has_results = !self.files.is_empty();
         let all_collapsed = has_results && self.collapsed.len() == self.files.len();
+        let colors = cx.theme().colors();
+        let overview_marks = self
+            .entries
+            .iter()
+            .enumerate()
+            .filter_map(|(ix, entry)| match entry {
+                Entry::Match(file_ix, match_ix) => {
+                    let active = self.active_match == Some((*file_ix, *match_ix));
+                    Some(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .w_full()
+                            .h(px(2.))
+                            .top(relative(ix as f32 / entries_len as f32))
+                            .bg(if active {
+                                colors.text
+                            } else {
+                                colors.scrollbar_thumb_hover_background
+                            }),
+                    )
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
         let header_button = |id: &'static str, icon: IconName, tooltip: &'static str| {
             IconButton::new(id, icon)
                 .icon_size(IconSize::Small)
@@ -967,18 +998,33 @@ impl Render for SearchPanel {
             })
             .child(div().pt_1().child(self.render_status(cx)))
             .child(
-                uniform_list(
-                    "search-panel-entries",
-                    entries_len,
-                    cx.processor(|this, range: Range<usize>, _window, cx| {
-                        let replace = this.preview_query(cx);
-                        range
-                            .map(|ix| this.render_entry(ix, replace.as_ref(), cx))
-                            .collect::<Vec<_>>()
-                    }),
-                )
-                .flex_1()
-                .size_full(),
+                div()
+                    .relative()
+                    .flex_1()
+                    .size_full()
+                    .child(
+                        uniform_list(
+                            "search-panel-entries",
+                            entries_len,
+                            cx.processor(|this, range: Range<usize>, _window, cx| {
+                                let replace = this.preview_query(cx);
+                                range
+                                    .map(|ix| this.render_entry(ix, replace.as_ref(), cx))
+                                    .collect::<Vec<_>>()
+                            }),
+                        )
+                        .size_full(),
+                    )
+                    // VS Code style overview strip: one mark per match row.
+                    .child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .right_0()
+                            .h_full()
+                            .w(px(8.))
+                            .children(overview_marks),
+                    ),
             )
     }
 }

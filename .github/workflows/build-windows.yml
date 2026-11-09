@@ -18,6 +18,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Machine specs
+        shell: pwsh
+        run: |
+          "CPU cores: $env:NUMBER_OF_PROCESSORS"
+          "RAM GB: {0:N1}" -f ((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB)
+          Get-PSDrive C | Select-Object @{n='FreeGB';e={[math]::Round($_.Free/1GB,1)}}
+
       - name: Install Rust toolchain from rust-toolchain.toml
         run: rustup show
 

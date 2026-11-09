@@ -1535,7 +1535,7 @@ impl EditorElement {
                 (is_singleton && scrollbar_settings.selected_symbol && (editor.has_background_highlights(HighlightKey::DocumentHighlightRead) || editor.has_background_highlights(HighlightKey::DocumentHighlightWrite)))
                 ||
                 // Diagnostics
-                (is_singleton && scrollbar_settings.diagnostics != ScrollbarDiagnostics::None && snapshot.buffer_snapshot().has_diagnostics())
+                (scrollbar_settings.diagnostics != ScrollbarDiagnostics::None && snapshot.buffer_snapshot().has_diagnostics())
                 ||
                 // Cursors out of sight
                 non_visible_cursors
@@ -6406,7 +6406,8 @@ impl EditorElement {
             let scrollbar_settings = EditorSettings::get_global(cx).scrollbar;
             let show_git_diff_markers = scrollbar_settings.git_diff
                 && (is_singleton || editor.allow_git_diff_scrollbar_markers);
-            if !is_singleton && !show_git_diff_markers {
+            let show_diagnostics = scrollbar_settings.diagnostics != ScrollbarDiagnostics::None;
+            if !is_singleton && !show_git_diff_markers && !show_diagnostics {
                 editor.scrollbar_marker_state.dirty = true;
                 editor.scrollbar_marker_state.markers = Default::default();
                 editor.scrollbar_marker_state.pending_refresh = None;
@@ -6508,9 +6509,8 @@ impl EditorElement {
                                 }
                             }
 
-                            if is_singleton
-                                && scrollbar_settings.diagnostics != ScrollbarDiagnostics::None
-                            {
+                            // Also in multi-buffer editors (e.g. Problems), like VS Code.
+                            if scrollbar_settings.diagnostics != ScrollbarDiagnostics::None {
                                 let diagnostics = snapshot
                                     .buffer_snapshot()
                                     .diagnostics_in_range::<Point>(Point::zero()..max_point)

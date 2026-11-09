@@ -785,6 +785,10 @@ impl BufferSerialization {
 }
 
 /// Addons allow storing per-editor state in other crates (e.g. Vim)
+/// Use `TypeId::of::<EphemeralFold>()` as a fold placeholder's `type_tag` for purely visual folds
+/// (e.g. markdown live preview): they are not persisted and don't show a gutter fold toggle.
+pub struct EphemeralFold;
+
 pub trait Addon: 'static {
     fn extend_key_context(&self, _: &mut KeyContext, _: &App) {}
 

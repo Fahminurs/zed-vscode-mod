@@ -455,6 +455,19 @@ pub struct Pane {
     welcome_page: Option<Entity<crate::welcome::WelcomePage>>,
 
     pub in_center_group: bool,
+    /// Obsidian-style "Stack tabs": render tabs compact so more fit.
+    stack_tabs: bool,
+}
+
+const TAB_BOOKMARKS_KEY: &str = "pane_tab_bookmarks";
+
+fn read_tab_bookmarks(cx: &App) -> Vec<Vec<PathBuf>> {
+    db::kvp::KeyValueStore::global(cx)
+        .read_kvp(TAB_BOOKMARKS_KEY)
+        .log_err()
+        .flatten()
+        .and_then(|json| serde_json::from_str(&json).log_err())
+        .unwrap_or_default()
 }
 
 pub struct ActivationHistoryEntry {
@@ -626,6 +639,7 @@ impl Pane {
             project_item_restoration_data: HashMap::default(),
             welcome_page: None,
             in_center_group: false,
+            stack_tabs: false,
         }
     }
 
@@ -3088,6 +3102,7 @@ impl Pane {
                 h_flex()
                     .id(("pane-tab-content", ix))
                     .gap_1()
+                    .when(self.stack_tabs, |this| this.max_w(px(96.)).overflow_hidden())
                     .children(if let Some(icon) = icon {
                         Some(icon)
                     } else if !capability.editable() {
@@ -3648,7 +3663,83 @@ impl Pane {
                                     save_intent: None,
                                     close_pinned: false,
                                 };
+                                let stacked = pane.read(cx).stack_tabs;
+                                let tab_count = pane.read(cx).items_len();
                                 menu = menu
+                                    .toggleable_entry(
+                                        "Stack tabs",
+                                        stacked,
+                                        IconPosition::Start,
+                                        None,
+                                        window.handler_for(&pane, |pane, _, cx| {
+                                            pane.stack_tabs = !pane.stack_tabs;
+                                            cx.notify();
+                                        }),
+                                    )
+                                    .entry(
+                                        format!("Bookmark {tab_count} tabs…"),
+                                        None,
+                                        window.handler_for(&pane, |pane, _, cx| {
+                                            let Some(project) = pane.project.upgrade() else {
+                                                return;
+                                            };
+                                            let paths: Vec<PathBuf> = pane
+                                                .items()
+                                                .filter_map(|item| item.project_path(cx))
+                                                .filter_map(|path| {
+                                                    project.read(cx).absolute_path(&path, cx)
+                                                })
+                                                .collect();
+                                            if paths.is_empty() {
+                                                return;
+                                            }
+                                            let mut bookmarks = read_tab_bookmarks(cx);
+                                            bookmarks.push(paths);
+                                            let Some(json) =
+                                                serde_json::to_string(&bookmarks).log_err()
+                                            else {
+                                                return;
+                                            };
+                                            let kvp = db::kvp::KeyValueStore::global(cx);
+                                            cx.background_spawn(async move {
+                                                kvp.write_kvp(TAB_BOOKMARKS_KEY.into(), json)
+                                                    .await
+                                                    .log_err();
+                                            })
+                                            .detach();
+                                        }),
+                                    );
+                                for (ix, paths) in
+                                    read_tab_bookmarks(cx).into_iter().enumerate()
+                                {
+                                    menu = menu.entry(
+                                        format!("Open bookmark: Bookmark {}", ix + 1),
+                                        None,
+                                        window.handler_for(&pane, move |pane, window, cx| {
+                                            let to_pane = cx.entity().downgrade();
+                                            pane.workspace
+                                                .update(cx, |workspace, cx| {
+                                                    workspace
+                                                        .open_paths(
+                                                            paths.clone(),
+                                                            OpenOptions {
+                                                                visible: Some(
+                                                                    OpenVisible::OnlyDirectories,
+                                                                ),
+                                                                ..Default::default()
+                                                            },
+                                                            Some(to_pane),
+                                                            window,
+                                                            cx,
+                                                        )
+                                                        .detach()
+                                                })
+                                                .log_err();
+                                        }),
+                                    );
+                                }
+                                menu = menu
+                                    .separator()
                                     .entry(
                                         "Close All",
                                         Some(Box::new(close_all.clone())),

@@ -1493,6 +1493,31 @@ impl Render for ActivityBar {
                             }),
                     ),
             )
+            .child(
+                div()
+                    .w_full()
+                    .h(px(44.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .border_l_2()
+                    .border_color(inactive_marker)
+                    .child(
+                        IconButton::new("activity-bar-whiteboard", IconName::Pencil)
+                            .icon_size(IconSize::Medium)
+                            .icon_color(Color::Muted)
+                            .aria_label("Whiteboard")
+                            .tooltip(Tooltip::text("Whiteboard"))
+                            .on_click(|_, window, cx| {
+                                // by name: workspace can't depend on the whiteboard crate
+                                if let Ok(action) =
+                                    cx.build_action("whiteboard::OpenWhiteboard", None)
+                                {
+                                    window.dispatch_action(action, cx);
+                                }
+                            }),
+                    ),
+            )
             .child(div().flex_1())
             .child(
                 div()

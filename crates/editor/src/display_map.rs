@@ -180,6 +180,7 @@ pub enum HighlightKey {
     HoveredLinkState,
     InlineAssist,
     InputComposition,
+    MarkdownLive,
     MatchingBracket,
     NavigationOverlay(NavigationOverlayKey),
     PendingInput,

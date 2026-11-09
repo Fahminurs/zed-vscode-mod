@@ -18,7 +18,13 @@ impl EditorSnapshot {
         window: &mut Window,
         cx: &mut App,
     ) -> Option<AnyElement> {
-        let folded = self.is_line_folded(buffer_row);
+        let folded = self.is_line_folded(buffer_row) && {
+            let row_range = Point::new(buffer_row.0, 0)
+                ..Point::new(buffer_row.0, self.buffer_snapshot().line_len(buffer_row));
+            let mut folds = self.folds_in_range(row_range).peekable();
+            folds.peek().is_none()
+                || folds.any(|fold| fold.placeholder.type_tag != Some(TypeId::of::<EphemeralFold>()))
+        };
         let mut is_foldable = false;
 
         if let Some(crease) = self
@@ -835,6 +841,7 @@ impl Editor {
         };
         let inmemory_folds = display_snapshot
             .folds_in_range(MultiBufferOffset(0)..display_snapshot.buffer_snapshot().len())
+            .filter(|fold| fold.placeholder.type_tag != Some(TypeId::of::<EphemeralFold>()))
             .map(|fold| {
                 let start = fold.range.start.text_anchor_in(buffer_snapshot);
                 let end = fold.range.end.text_anchor_in(buffer_snapshot);

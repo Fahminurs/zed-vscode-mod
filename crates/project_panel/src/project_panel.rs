@@ -26,7 +26,7 @@ use gpui::{
     MouseButton, MouseDownEvent, MouseExitEvent, ParentElement, PathPromptOptions, Pixels, Point,
     PromptLevel, Render, ScrollStrategy, Stateful, Styled, Subscription, Task,
     UniformListScrollHandle, WeakEntity, Window, actions, anchored, deferred, div, hsla,
-    linear_color_stop, linear_gradient, point, px, size, transparent_white, uniform_list,
+    linear_color_stop, linear_gradient, point, px, relative, size, transparent_white, uniform_list,
 };
 use itertools::Itertools;
 use language::DiagnosticSeverity;
@@ -73,8 +73,9 @@ use util::{
     rel_path::{RelPath, RelPathBuf},
 };
 use workspace::{
-    DraggedSelection, OpenInTerminal, OpenMode, OpenOptions, OpenVisible, PreviewTabsSettings,
-    SelectedEntry, SplitDirection, Workspace, WorkspaceSettings, copy_file_permalink,
+    CloseAllItems, DraggedSelection, ItemHandle as _, OpenInTerminal, OpenMode, OpenOptions,
+    OpenVisible, PreviewTabsSettings, SaveIntent, SelectedEntry, SplitDirection, Workspace,
+    WorkspaceSettings, copy_file_permalink,
     dock::{DockPosition, Panel, PanelEvent},
     focus_follows_mouse::FocusFollowsMouse as _,
     notifications::{DetachAndPromptErr, NotifyResultExt, NotifyTaskExt},
@@ -154,6 +155,7 @@ pub struct ProjectPanel {
     clipboard: Option<ClipboardEntry>,
     _dragged_entry_destination: Option<Arc<Path>>,
     workspace: WeakEntity<Workspace>,
+    open_editors_collapsed: bool,
     diagnostics: HashMap<(WorktreeId, Arc<RelPath>), DiagnosticSeverity>,
     diagnostic_counts: HashMap<(WorktreeId, Arc<RelPath>), DiagnosticCount>,
     diagnostic_summary_update: Task<()>,
@@ -717,9 +719,29 @@ impl ProjectPanel {
         let project = workspace.project().clone();
         let git_store = project.read(cx).git_store().clone();
         let path_style = project.read(cx).path_style(cx);
+        let workspace_handle = cx.entity();
         let project_panel = cx.new(|cx| {
             let focus_handle = cx.focus_handle();
             cx.on_focus(&focus_handle, window, Self::focus_in).detach();
+
+            // Keep the Open Editors section in sync with the panes.
+            cx.subscribe_in(
+                &workspace_handle,
+                window,
+                |_, _, event: &workspace::Event, _, cx| {
+                    if matches!(
+                        event,
+                        workspace::Event::ItemAdded { .. }
+                            | workspace::Event::ItemRemoved { .. }
+                            | workspace::Event::ActiveItemChanged
+                            | workspace::Event::PaneAdded(_)
+                            | workspace::Event::PaneRemoved
+                    ) {
+                        cx.notify();
+                    }
+                },
+            )
+            .detach();
 
             cx.subscribe_in(
                 &git_store,
@@ -902,6 +924,7 @@ impl ProjectPanel {
                 clipboard: None,
                 _dragged_entry_destination: None,
                 workspace: workspace.weak_handle(),
+                open_editors_collapsed: false,
                 diagnostics: Default::default(),
                 diagnostic_counts: Default::default(),
                 diagnostic_summary_update: Task::ready(()),
@@ -948,6 +971,15 @@ impl ProjectPanel {
                             let worktree_id = worktree.read(cx).id();
                             let entry_id = entry.id;
                             let is_via_ssh = project.read(cx).is_via_remote_server();
+
+                            // Binary documents (Excel, PDF) and notebooks open as previews, loaded on click.
+                            let abs_path = worktree.read(cx).absolutize(&file_path);
+                            let ext = abs_path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+                            if matches!(ext.as_str(), "xlsx" | "xlsm" | "xls" | "ods" | "pdf" | "ipynb")
+                                && file_previews::open_path(workspace, abs_path, window, cx)
+                            {
+                                return;
+                            }
 
                             workspace
                                 .open_path_preview(
@@ -7603,6 +7635,198 @@ fn item_width_estimate(depth: usize, item_text_chars: usize, is_symlink: bool) -
     item_width
 }
 
+impl ProjectPanel {
+    /// VS Code style "OPEN EDITORS" list of every pane item backed by a project path.
+    fn render_open_editors(&self, cx: &Context<Self>) -> Option<AnyElement> {
+        let workspace = self.workspace.upgrade()?;
+        let path_style = self.project.read(cx).path_style(cx);
+        let mut rows = Vec::new();
+        for pane in workspace.read(cx).panes() {
+            let active_id = pane.read(cx).active_item().map(|item| item.item_id());
+            for item in pane.read(cx).items() {
+                let Some(project_path) = item.project_path(cx) else {
+                    continue;
+                };
+                let name = project_path
+                    .path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string();
+                let dir = project_path
+                    .path
+                    .parent()
+                    .map(|dir| dir.display(path_style).to_string())
+                    .unwrap_or_default();
+                let icon = FileIcons::get_icon(project_path.path.as_std_path(), cx);
+                let item_id = item.item_id();
+                rows.push((
+                    pane.clone(),
+                    item_id,
+                    Some(item_id) == active_id,
+                    name,
+                    dir,
+                    icon,
+                ));
+            }
+        }
+
+        let collapsed = self.open_editors_collapsed;
+        let header = h_flex()
+            .id("open-editors-header")
+            .group("open-editors-header")
+            .flex_none()
+            .w_full()
+            .h_6()
+            .px_1()
+            .gap_1()
+            .border_t_1()
+            .border_color(cx.theme().colors().border)
+            .child(
+                Icon::new(if collapsed {
+                    IconName::ChevronRight
+                } else {
+                    IconName::ChevronDown
+                })
+                .size(IconSize::Small)
+                .color(Color::Muted),
+            )
+            .child(
+                Label::new("OPEN EDITORS")
+                    .size(LabelSize::XSmall)
+                    .weight(FontWeight::BOLD),
+            )
+            .child(div().flex_1())
+            .child(
+                h_flex().visible_on_hover("open-editors-header").child(
+                    IconButton::new("open-editors-close-all", IconName::Close)
+                        .icon_size(IconSize::XSmall)
+                        .tooltip(Tooltip::text("Close All Editors"))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            cx.stop_propagation();
+                            let Some(workspace) = this.workspace.upgrade() else {
+                                return;
+                            };
+                            for pane in workspace.read(cx).panes().to_vec() {
+                                pane.update(cx, |pane, cx| {
+                                    pane.close_all_items(&CloseAllItems::default(), window, cx)
+                                        .detach_and_log_err(cx);
+                                });
+                            }
+                        })),
+                ),
+            )
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.open_editors_collapsed = !this.open_editors_collapsed;
+                cx.notify();
+            }));
+
+        let list = v_flex()
+            .id("open-editors-list")
+            .max_h(px(220.))
+            .overflow_y_scroll()
+            .children(rows.into_iter().enumerate().map(
+                |(ix, (pane, item_id, is_active, name, dir, icon))| {
+                    let close_pane = pane.clone();
+                    ListItem::new(("open-editor", ix))
+                        .toggle_state(is_active)
+                        .start_slot(
+                            h_flex()
+                                .gap_1()
+                                .child(
+                                    IconButton::new(("open-editor-close", ix), IconName::Close)
+                                        .icon_size(IconSize::XSmall)
+                                        .on_click(cx.listener(move |_, _, window, cx| {
+                                            cx.stop_propagation();
+                                            close_pane.update(cx, |pane, cx| {
+                                                pane.close_item_by_id(
+                                                    item_id,
+                                                    SaveIntent::Close,
+                                                    window,
+                                                    cx,
+                                                )
+                                                .detach_and_log_err(cx);
+                                            });
+                                        })),
+                                )
+                                .children(icon.map(|icon| {
+                                    Icon::from_path(icon.to_string()).color(Color::Muted)
+                                })),
+                        )
+                        .child(
+                            h_flex()
+                                .gap_1p5()
+                                .child(Label::new(name).size(LabelSize::Small))
+                                .child(
+                                    Label::new(dir)
+                                        .size(LabelSize::XSmall)
+                                        .color(Color::Muted)
+                                        .truncate(),
+                                ),
+                        )
+                        .on_click(cx.listener(move |_, _, window, cx| {
+                            pane.update(cx, |pane, cx| {
+                                if let Some(ix) =
+                                    pane.items().position(|item| item.item_id() == item_id)
+                                {
+                                    pane.activate_item(ix, true, true, window, cx);
+                                }
+                            });
+                        }))
+                },
+            ));
+
+        Some(
+            v_flex()
+                .flex_none()
+                .w_full()
+                .child(header)
+                .when(!collapsed, |this| this.child(list))
+                .into_any_element(),
+        )
+    }
+
+    /// Error/warning ticks beside the vertical scrollbar, one per visible entry with diagnostics.
+    fn render_diagnostic_marks(&self, item_count: usize, cx: &App) -> impl IntoElement {
+        let error = Color::Error.color(cx);
+        let warning = Color::Warning.color(cx);
+        let mut marks = Vec::new();
+        let mut ix = 0;
+        for worktree in &self.state.visible_entries {
+            for entry in &worktree.entries {
+                if let Some(severity) = self
+                    .diagnostics
+                    .get(&(worktree.worktree_id, entry.path.clone()))
+                {
+                    let color = if *severity == DiagnosticSeverity::ERROR {
+                        error
+                    } else {
+                        warning
+                    };
+                    marks.push(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .w_full()
+                            .h(px(2.))
+                            .top(relative(ix as f32 / item_count.max(1) as f32))
+                            .bg(color),
+                    );
+                }
+                ix += 1;
+            }
+        }
+        // ponytail: spans the whole panel height (like the scrollbar track), not exact
+        // thumb geometry; switch to the scroll handle's content size if marks drift.
+        div()
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .right_0()
+            .w(px(3.))
+            .children(marks)
+    }
+}
+
 impl Render for ProjectPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !cx.has_active_drag() {
@@ -8194,8 +8418,10 @@ impl Render for ProjectPanel {
                                     ))
                                 }),
                         )
+                        .children(self.render_open_editors(cx))
                         .size_full(),
                 )
+                .child(self.render_diagnostic_marks(item_count, cx))
                 .custom_scrollbars(
                     {
                         let mut scrollbars =
