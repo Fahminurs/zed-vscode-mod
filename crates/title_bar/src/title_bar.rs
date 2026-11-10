@@ -49,7 +49,7 @@ use theme::ActiveTheme;
 use title_bar_settings::TitleBarSettings;
 use ui::{
     Avatar, ButtonLike, ContextMenu, ContextMenuEntry, IconWithIndicator, Indicator, PopoverMenu,
-    PopoverMenuHandle, TintColor, Tooltip, prelude::*, utils::platform_title_bar_height,
+    PopoverMenuHandle, TintColor, Tooltip, prelude::*,
 };
 use update_version::UpdateVersion;
 use util::ResultExt;
@@ -421,33 +421,30 @@ impl Render for TitleBar {
         );
 
         if show_menus {
+            // VS Code style: one row — menus on the left, project name centred, layout
+            // toggles (and window buttons) on the right. No second row.
+            let right = children.pop();
+            let mut row: Vec<AnyElement> = Vec::new();
+            row.extend(
+                self.application_menu
+                    .clone()
+                    .map(|menu| menu.into_any_element()),
+            );
+            row.push(
+                h_flex()
+                    .h_full()
+                    .flex_1()
+                    .min_w_0()
+                    .justify_center()
+                    .children(children)
+                    .into_any_element(),
+            );
+            row.extend(right);
             self.platform_titlebar.update(cx, |this, _| {
                 this.set_button_layout(button_layout);
-                this.set_children(
-                    self.application_menu
-                        .clone()
-                        .map(|menu| menu.into_any_element()),
-                );
+                this.set_children(row);
             });
-
-            let height = platform_title_bar_height(window);
-            let title_bar_color = self.platform_titlebar.update(cx, |platform_titlebar, cx| {
-                platform_titlebar.title_bar_color(window, cx)
-            });
-
-            v_flex()
-                .w_full()
-                .child(self.platform_titlebar.clone().into_any_element())
-                .child(
-                    h_flex()
-                        .bg(title_bar_color)
-                        .h(height)
-                        .pl_2()
-                        .justify_between()
-                        .w_full()
-                        .children(children),
-                )
-                .into_any_element()
+            self.platform_titlebar.clone().into_any_element()
         } else {
             self.platform_titlebar.update(cx, |this, _| {
                 this.set_button_layout(button_layout);
