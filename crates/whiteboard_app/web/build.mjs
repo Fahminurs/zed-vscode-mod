@@ -1,6 +1,21 @@
 // Bundles Excalidraw + the app into web/dist, which the Rust binary embeds (include_dir).
 import { build } from "esbuild";
-import { cpSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { cpSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
+
+// Show "Fill" for every shape that has a Background section (rectangle, diamond, ellipse, …),
+// not only after a background colour is picked. Fails the build if Excalidraw's code changes.
+const alwaysShowFill = {
+  name: "always-show-fill",
+  setup(b) {
+    b.onLoad({ filter: /@excalidraw[\\/]excalidraw[\\/]dist[\\/]prod[\\/]index\.js$/ }, (args) => {
+      const src = readFileSync(args.path, "utf8");
+      const re = /(\w+)\((\w+),(\w+)\)&&(\w+)\("div",\{children:(\w+)\("changeBackgroundColor"\)\}\),\w+&&\5\("changeFillStyle"\)/;
+      if (!re.test(src)) throw new Error("always-show-fill: pattern not found");
+      const out = src.replace(re, '$1($2,$3)&&$4("div",{children:$5("changeBackgroundColor")}),$1($2,$3)&&$5("changeFillStyle")');
+      return { contents: out, loader: "js" };
+    });
+  },
+};
 
 rmSync("dist", { recursive: true, force: true });
 mkdirSync("dist/fonts", { recursive: true });
@@ -16,6 +31,7 @@ await build({
   minify: true,
   jsx: "automatic",
   conditions: ["production"],
+  plugins: [alwaysShowFill],
   loader: { ".woff2": "file", ".png": "file", ".svg": "file" },
   define: {
     "process.env.NODE_ENV": '"production"',

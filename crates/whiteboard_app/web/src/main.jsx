@@ -30,13 +30,24 @@ function syncDots(scrollX, scrollY, zoom) {
 const setTheme = (theme) => (document.documentElement.dataset.theme = theme);
 setTheme("dark");
 
-/** Light canvas colour → light theme, dark colour → dark theme ("transparent" keeps it). */
-function themeFor(bg) {
-  const m = /^#([0-9a-f]{6})/i.exec(bg ?? "");
-  if (!m) return null;
+/**
+ * How Excalidraw shows a canvas colour: as-is in light mode, through its dark-mode filter
+ * `invert(93%) hue-rotate(180deg)` in dark mode (so #ffffff shows as #121212).
+ */
+function shownColor(hex, theme) {
+  const m = /^#([0-9a-f]{6})$/i.exec(hex ?? "");
+  if (!m || theme !== "dark") return hex;
   const n = parseInt(m[1], 16);
-  const lum = (0.299 * (n >> 16) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) / 255;
-  return lum > 0.5 ? "light" : "dark";
+  const [r, g, b] = [n >> 16, (n >> 8) & 255, n & 255].map((v) => {
+    const c = v / 255;
+    return c + 0.93 * (1 - 2 * c);
+  });
+  const out = [
+    -0.574 * r + 1.43 * g + 0.144 * b,
+    0.426 * r + 0.43 * g + 0.144 * b,
+    0.426 * r + 1.43 * g - 0.856 * b,
+  ];
+  return "#" + out.map((v) => Math.round(Math.min(1, Math.max(0, v)) * 255).toString(16).padStart(2, "0")).join("");
 }
 
 // Toolbar shortcut labels as letters (V, R, D, …) taken from each tool's title "Name — R or 2".
@@ -89,64 +100,88 @@ function StickyTool({ onAdd }) {
   );
 }
 
-// Sticky notes are embeddables rendered as HTML (not inverted by the dark canvas filter),
-// so they stay real paper-yellow. Text/colour live in element.customData.
-const STICKY_LINK = "sticky:note";
+// Sticky notes are real canvas elements (so Layers, move, resize, undo and export all work):
+// a paper *image* (Excalidraw keeps images true-colour in dark mode, so the paper stays yellow)
+// grouped with a transparent rectangle whose bound text is the note.
 const STICKY_COLORS = ["#fff3a3", "#ffc9de", "#c3f5c3", "#bfe3ff"];
-const isSticky = (link) => typeof link === "string" && link.startsWith("sticky:");
+const NOTE = 220;
+const PAD = 10; // room for the paper's shadow inside the image
+const STRIP = 22;
+const paperFileId = (color) => "sticky-paper-" + color.slice(1);
+// Dark mode inverts canvas text, so the ink is picked per theme to always look dark grey.
+const noteInk = (theme) => (theme === "dark" ? "#e2e2e2" : "#2b2b2b");
 
-function updateSticky(api, id, patch) {
+const paperUrls = {};
+function paperUrl(color) {
+  if (paperUrls[color]) return paperUrls[color];
+  const scale = 2;
+  const size = NOTE + PAD * 2;
+  const c = document.createElement("canvas");
+  c.width = c.height = size * scale;
+  const g = c.getContext("2d");
+  g.scale(scale, scale);
+  const [x, y, w, h, fold] = [PAD, PAD, NOTE, NOTE, 18];
+  const sheet = () => {
+    g.beginPath();
+    g.moveTo(x, y);
+    g.lineTo(x + w, y);
+    g.lineTo(x + w, y + h);
+    g.lineTo(x + fold, y + h);
+    g.lineTo(x, y + h - fold);
+    g.closePath();
+  };
+  g.save();
+  g.shadowColor = "rgba(0, 0, 0, 0.45)";
+  g.shadowBlur = 9;
+  g.shadowOffsetY = 4;
+  sheet();
+  g.fillStyle = color;
+  g.fill();
+  g.restore();
+  g.fillStyle = "rgba(0, 0, 0, 0.06)";
+  g.fillRect(x, y, w, STRIP);
+  g.beginPath();
+  g.moveTo(x, y + h - fold);
+  g.lineTo(x + fold, y + h - fold);
+  g.lineTo(x + fold, y + h);
+  g.closePath();
+  g.fillStyle = "rgba(0, 0, 0, 0.18)";
+  g.fill();
+  return (paperUrls[color] = c.toDataURL("image/png"));
+}
+
+function ensurePaper(api, color) {
+  const id = paperFileId(color);
+  if (!api.getFiles()[id]) {
+    api.addFiles([{ id, dataURL: paperUrl(color), mimeType: "image/png", created: Date.now() }]);
+  }
+  return id;
+}
+
+const isPaper = (el) => el?.type === "image" && el.customData?.stickyPaper;
+
+/** Recolour the note ink for the theme (dark mode would otherwise show it light on yellow). */
+function syncInk(api, theme) {
   const els = api.getSceneElementsIncludingDeleted();
+  const noteBoxes = new Set(els.filter((e) => e.customData?.stickyBox).map((e) => e.id));
+  const ink = noteInk(theme);
+  if (!els.some((e) => noteBoxes.has(e.containerId) && e.strokeColor !== ink)) return;
   api.updateScene({
     elements: els.map((e) =>
-      e.id === id ? newElementWith(e, { customData: { ...e.customData, ...patch } }) : e,
+      noteBoxes.has(e.containerId) && e.strokeColor !== ink ? newElementWith(e, { strokeColor: ink }) : e,
     ),
+    captureUpdate: "NEVER",
   });
 }
 
-function StickyNote({ el, api, active }) {
-  const text = useRef(null);
-  const data = el.customData ?? {};
-  useEffect(() => {
-    const node = text.current;
-    if (!active || !node) return;
-    node.focus();
-    const range = document.createRange();
-    range.selectNodeContents(node);
-    range.collapse(false);
-    const sel = window.getSelection();
-    sel.removeAllRanges();
-    sel.addRange(range);
-  }, [active]);
-  useEffect(() => {
-    const node = text.current;
-    if (node && document.activeElement !== node && node.innerText !== (data.text ?? "")) {
-      node.innerText = data.text ?? "";
-    }
-  }, [data.text]);
+/** Colour dots shown above a selected sticky note. */
+function StickyPalette({ at, onPick }) {
+  if (!at) return null;
   return (
-    <div className="sticky-paper" style={{ background: data.color ?? STICKY_COLORS[0] }}>
-      <div className="sticky-colors">
-        {STICKY_COLORS.map((c) => (
-          <button
-            key={c}
-            style={{ background: c }}
-            title="Note colour"
-            onPointerDown={(e) => e.stopPropagation()}
-            onClick={() => updateSticky(api, el.id, { color: c })}
-          />
-        ))}
-      </div>
-      <div
-        ref={text}
-        className="sticky-text"
-        contentEditable
-        suppressContentEditableWarning
-        spellCheck={false}
-        data-placeholder="Tulis catatan…"
-        onKeyDown={(e) => e.stopPropagation()}
-        onBlur={(e) => updateSticky(api, el.id, { text: e.currentTarget.innerText })}
-      />
+    <div className="sticky-palette" style={{ left: at.x, top: at.y }}>
+      {STICKY_COLORS.map((c) => (
+        <button key={c} style={{ background: c }} title="Note colour" onClick={() => onPick(at.gid, c)} />
+      ))}
     </div>
   );
 }
@@ -156,7 +191,15 @@ function App() {
   const saved = useRef(0);
   const dirty = useRef(false);
   const [ready, setReady] = useState(false);
-  const lastBg = useRef("transparent");
+  const [palette, setPalette] = useState(null);
+  // Excalidraw's own canvas stays transparent so the dots always show; the chosen canvas
+  // colour is painted underneath them (and written back into the file on save).
+  const canvasColor = useRef(null);
+  const paintCanvas = (color, theme = document.documentElement.dataset.theme) => {
+    canvasColor.current = color;
+    const css = document.documentElement.style;
+    color ? css.setProperty("--wb-bg", shownColor(color, theme)) : css.removeProperty("--wb-bg");
+  };
 
   const markDirty = (value) => {
     if (dirty.current !== value) {
@@ -168,12 +211,19 @@ function App() {
   const load = (text) => {
     const data = restore(JSON.parse(text), null, null);
     const a = api.current;
+    const bg = data.appState?.viewBackgroundColor;
+    paintCanvas(bg && bg !== "transparent" ? bg : null);
     a.updateScene({
       elements: data.elements,
-      appState: { ...data.appState, theme: a.getAppState().theme },
+      appState: {
+        ...data.appState,
+        viewBackgroundColor: "transparent",
+        theme: a.getAppState().theme,
+      },
       captureUpdate: "NEVER",
     });
     if (data.files) a.addFiles(Object.values(data.files));
+    syncInk(a, a.getAppState().theme);
     a.history?.clear?.();
     saved.current = getSceneVersion(data.elements);
     markDirty(false);
@@ -184,7 +234,8 @@ function App() {
 
   const save = (saveAs) => {
     const a = api.current;
-    const data = serializeAsJSON(a.getSceneElements(), a.getAppState(), a.getFiles(), "local");
+    const appState = { ...a.getAppState(), viewBackgroundColor: canvasColor.current ?? "transparent" };
+    const data = serializeAsJSON(a.getSceneElements(), appState, a.getFiles(), "local");
     post({ type: "save", data, saveAs });
   };
 
@@ -192,32 +243,70 @@ function App() {
     const a = api.current;
     const st = a.getAppState();
     const z = st.zoom.value;
-    const x = -st.scrollX + st.width / 2 / z - 110 + (Math.random() * 40 - 20);
-    const y = -st.scrollY + st.height / 2 / z - 110 + (Math.random() * 40 - 20);
-    const [base] = convertToExcalidrawElements(
-      [{ type: "rectangle", x, y, width: 220, height: 220 }],
-      { regenerateIds: true },
+    const x = -st.scrollX + st.width / 2 / z - NOTE / 2 + (Math.random() * 40 - 20);
+    const y = -st.scrollY + st.height / 2 / z - NOTE / 2 + (Math.random() * 40 - 20);
+    const color = STICKY_COLORS[0];
+    const fileId = ensurePaper(a, color);
+    const gid = "sticky-" + Math.random().toString(36).slice(2, 10);
+    const els = convertToExcalidrawElements(
+      [
+        {
+          type: "image",
+          fileId,
+          x: x - PAD,
+          y: y - PAD,
+          width: NOTE + PAD * 2,
+          height: NOTE + PAD * 2,
+          groupIds: [gid],
+          customData: { stickyPaper: true, color },
+        },
+        {
+          type: "rectangle",
+          x: x + 8,
+          y: y + STRIP + 4,
+          width: NOTE - 16,
+          height: NOTE - STRIP - 12,
+          strokeColor: "transparent",
+          backgroundColor: "transparent",
+          roughness: 0,
+          roundness: null,
+          groupIds: [gid],
+          customData: { stickyBox: true },
+          label: {
+            text: " ",
+            fontSize: 20,
+            fontFamily: FONT_FAMILY?.Excalifont ?? 5,
+            strokeColor: noteInk(st.theme),
+            textAlign: "left",
+            verticalAlign: "top",
+          },
+        },
+      ],
+      { regenerateIds: false },
     );
-    const note = {
-      ...base,
-      type: "embeddable",
-      link: STICKY_LINK,
-      strokeColor: "transparent",
-      backgroundColor: "transparent",
-      strokeWidth: 1,
-      roughness: 0,
-      roundness: null,
-      customData: { sticky: true, text: "", color: STICKY_COLORS[0] },
-    };
-    a.updateScene({ elements: [...a.getSceneElements(), note] });
+    a.updateScene({ elements: [...a.getSceneElements(), ...els] });
     a.setActiveTool({ type: "selection" });
-    // Open it for typing straight away.
-    const placed = a.getSceneElements().find((e) => e.id === note.id);
+    // Select the text box and press Enter for the user, so typing starts right away.
+    const box = els.find((e) => e.customData?.stickyBox);
+    a.updateScene({ appState: { selectedElementIds: { [box.id]: true }, selectedGroupIds: {} } });
+    requestAnimationFrame(() =>
+      document
+        .querySelector(".excalidraw-container, .excalidraw")
+        ?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", keyCode: 13, bubbles: true })),
+    );
+  };
+
+  const recolorSticky = (gid, color) => {
+    const a = api.current;
+    const fileId = ensurePaper(a, color);
     a.updateScene({
-      appState: {
-        selectedElementIds: { [note.id]: true },
-        activeEmbeddable: placed ? { element: placed, state: "active" } : null,
-      },
+      elements: a
+        .getSceneElementsIncludingDeleted()
+        .map((e) =>
+          isPaper(e) && e.groupIds.includes(gid)
+            ? newElementWith(e, { fileId, customData: { ...e.customData, color } })
+            : e,
+        ),
     });
   };
 
@@ -226,6 +315,7 @@ function App() {
     window.__wb = {
       load,
       reset: () => {
+        paintCanvas(null);
         api.current.resetScene();
         saved.current = getSceneVersion(api.current.getSceneElements());
         markDirty(false);
@@ -262,6 +352,8 @@ function App() {
   }, [ready]);
 
   return (
+    <>
+    <StickyPalette at={palette} onPick={recolorSticky} />
     <Excalidraw
       initialData={{ appState: { viewBackgroundColor: "transparent", theme: "dark" } }}
       excalidrawAPI={(a) => {
@@ -270,34 +362,38 @@ function App() {
       }}
       onChange={(elements, appState) => {
         markDirty(getSceneVersion(elements) !== saved.current);
-        // Picking a light/dark canvas colour switches the whole UI to match.
-        if (appState.viewBackgroundColor !== lastBg.current) {
-          lastBg.current = appState.viewBackgroundColor;
-          const want = themeFor(appState.viewBackgroundColor);
-          if (want && want !== appState.theme) {
-            api.current?.updateScene({ appState: { theme: want } });
-          }
+        const bg = appState.viewBackgroundColor;
+        if (bg && bg !== "transparent") {
+          // A canvas colour was picked: paint it under the dots (theme is left alone).
+          paintCanvas(bg, appState.theme);
+          markDirty(true);
+          api.current?.updateScene({ appState: { viewBackgroundColor: "transparent" } });
+          return;
         }
         if (document.documentElement.dataset.theme !== appState.theme) {
           setTheme(appState.theme);
-          // Back to dark with a light canvas colour: drop it so the dotted dark canvas shows.
-          if (appState.theme === "dark" && themeFor(appState.viewBackgroundColor) === "light") {
-            lastBg.current = "transparent";
-            api.current?.updateScene({ appState: { viewBackgroundColor: "transparent" } });
-          }
+          // Same canvas colour, shown the way the new theme shows it.
+          if (canvasColor.current) paintCanvas(canvasColor.current, appState.theme);
+          if (api.current) syncInk(api.current, appState.theme);
         }
+        // Colour dots above a selected sticky note (only when nothing else is selected).
+        const sel = elements.filter((e) => appState.selectedElementIds[e.id]);
+        const gid = sel[0]?.groupIds?.[0];
+        const paper =
+          gid && !appState.editingTextElement && sel.every((e) => e.groupIds?.includes(gid))
+            ? elements.find((e) => isPaper(e) && e.groupIds.includes(gid))
+            : null;
+        const z = appState.zoom.value;
+        const next = paper
+          ? {
+              gid,
+              x: Math.round((paper.x + paper.width - PAD + appState.scrollX) * z + appState.offsetLeft),
+              y: Math.round((paper.y + PAD + appState.scrollY) * z + appState.offsetTop) - 34,
+            }
+          : null;
+        if (JSON.stringify(next) !== JSON.stringify(palette)) setPalette(next);
       }}
       onScrollChange={syncDots}
-      validateEmbeddable={(link) => (isSticky(link) ? true : undefined)}
-      renderEmbeddable={(el, appState) =>
-        isSticky(el.link) ? (
-          <StickyNote
-            el={el}
-            api={api.current}
-            active={appState.activeEmbeddable?.element?.id === el.id && appState.activeEmbeddable?.state === "active"}
-          />
-        ) : null
-      }
     >
       <StickyTool onAdd={addSticky} />
       <MainMenu>
@@ -319,6 +415,7 @@ function App() {
         <MainMenu.DefaultItems.ChangeCanvasBackground />
       </MainMenu>
     </Excalidraw>
+    </>
   );
 }
 
