@@ -82,6 +82,19 @@ pub fn classify(line: &str) -> Kind<'_> {
     }
 }
 
+/// Length of the block marker that live preview draws as a widget: `## `, `> `, `- `, `1. `,
+/// `- [ ] ` (with its indent). Zero for plain text.
+pub fn marker_len(line: &str) -> usize {
+    match classify(line) {
+        Kind::Heading(..) => {
+            let hashes = line.bytes().take_while(|&b| b == b'#').count();
+            (hashes + 1).min(line.len())
+        }
+        Kind::Quote(rest) | Kind::List { rest, .. } => line.len() - rest.len(),
+        _ => 0,
+    }
+}
+
 /// `(length of this line's list prefix, prefix for the next line)` for Enter continuation.
 pub fn list_prefix(line: &str) -> Option<(usize, String)> {
     let t = line.trim_start();

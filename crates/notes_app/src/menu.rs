@@ -16,6 +16,7 @@ macro_rules! icons {
     };
 }
 icons!(
+    "check",
     "link",
     "external-link",
     "brush",

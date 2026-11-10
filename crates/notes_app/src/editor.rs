@@ -125,6 +125,8 @@ pub struct Editor {
     reveal: bool,
     title: String,
     menu: Option<menu::Menu>,
+    /// Bytes of the caret line's marker (`- `, `## `, …) that the last paint drew as a widget.
+    drawn_head: usize,
 }
 
 impl Editor {
@@ -151,6 +153,7 @@ impl Editor {
             reveal: false,
             title: String::new(),
             menu: None,
+            drawn_head: 0,
         }
     }
 
@@ -204,10 +207,30 @@ impl Editor {
         }
     }
 
+    /// Length of `row`'s block marker that is shown as a widget (bullet, number, checkbox,
+    /// heading size, quote bar) while that line is edited. Zero inside code fences.
+    fn head_of(&self, row: usize) -> usize {
+        let line = &self.lines[row];
+        let fences = self.lines[..row]
+            .iter()
+            .filter(|l| markdown::is_fence(l))
+            .count();
+        if fences % 2 == 1 || markdown::is_fence(line) {
+            0
+        } else {
+            markdown::marker_len(line)
+        }
+    }
+
+    fn head(&self) -> usize {
+        self.head_of(self.row)
+    }
+
     fn set_caret(&mut self, row: usize, col: usize, cx: &mut Context<Self>) {
         self.row = row.min(self.lines.len() - 1);
+        let head = self.head_of(self.row);
         let line = &self.lines[self.row];
-        let mut col = col.min(line.len());
+        let mut col = col.min(line.len()).max(head);
         while !line.is_char_boundary(col) {
             col -= 1;
         }
@@ -222,6 +245,7 @@ impl Editor {
 
     fn select_to(&mut self, col: usize, cx: &mut Context<Self>) {
         self.all = false;
+        let col = col.max(self.head());
         if self.reversed {
             self.sel.start = col
         } else {
@@ -257,12 +281,15 @@ impl Editor {
         else {
             return;
         };
-        let chars = self.line()[..self.cursor()].chars().count();
-        let line = &self.lines[row];
-        let col = line
-            .char_indices()
-            .nth(chars)
-            .map_or(line.len(), |(i, _)| i);
+        let head = self.head();
+        let chars = self.line()[head..self.cursor().max(head)].chars().count();
+        let target_head = self.head_of(row);
+        let line = &self.lines[row][target_head..];
+        let col = target_head
+            + line
+                .char_indices()
+                .nth(chars)
+                .map_or(line.len(), |(i, _)| i);
         self.set_caret(row, col, cx);
     }
 
@@ -326,7 +353,10 @@ impl Editor {
 
     fn backspace(&mut self, _: &Backspace, _: &mut Window, cx: &mut Context<Self>) {
         let col = self.cursor();
-        if self.all || !self.sel.is_empty() || col > 0 {
+        let head = self.head();
+        if !self.all && self.sel.is_empty() && head > 0 && col == head {
+            self.replace(0..head, "", false, cx);
+        } else if self.all || !self.sel.is_empty() || col > 0 {
             self.delete_sel_or(self.prev(col)..col, cx);
         } else if self.row > 0 {
             self.checkpoint(false);
@@ -354,7 +384,7 @@ impl Editor {
         let col = self.cursor();
         if !self.sel.is_empty() {
             self.set_caret(self.row, self.sel.start, cx);
-        } else if col > 0 {
+        } else if col > self.head() {
             self.set_caret(self.row, self.prev(col), cx);
         } else if self.row > 0 {
             self.set_caret(self.row - 1, usize::MAX, cx);
@@ -449,10 +479,11 @@ impl Editor {
             return self.line().len();
         };
         let local = point(pos.x - b.left(), (pos.y - b.top()).max(px(0.)));
-        let i = layout
-            .closest_index_for_position(local, self.lh)
-            .unwrap_or_else(|i| i)
-            .min(self.line().len());
+        let i = (self.drawn_head
+            + layout
+                .closest_index_for_position(local, self.lh)
+                .unwrap_or_else(|i| i))
+        .min(self.line().len());
         if self.line().is_char_boundary(i) {
             i
         } else {
@@ -533,47 +564,58 @@ impl Editor {
             .into_any_element()
     }
 
-    fn rendered(&self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
-        let p = palette();
-        let text = c(0xdcddde);
-        let base = font(UI);
-        match markdown::classify(&self.lines[ix]) {
-            Kind::Blank => div().into_any_element(),
-            Kind::Heading(level, rest) => {
-                let size = BASE * HEADING[level - 1];
-                div()
-                    .pt(px(size * 0.3))
-                    .text_size(px(size))
-                    .line_height(px(size * 1.3))
-                    .child(self.text(ix, rest, base.bold(), text))
-                    .into_any_element()
+    /// Inline text of a line, or the editable caret line in its place.
+    fn body(
+        &self,
+        ix: usize,
+        rest: &str,
+        base: Font,
+        color: Hsla,
+        editing: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        if editing {
+            CaretLine {
+                editor: cx.entity(),
+                font: base,
+                start: self.head(),
             }
-            Kind::Rule => div()
-                .h(px(LH))
-                .flex()
-                .items_center()
-                .child(div().w_full().h_px().bg(c(0x444444)))
-                .into_any_element(),
-            Kind::Quote(rest) => div()
-                .border_l_2()
-                .border_color(p.accent)
-                .pl_4()
-                .child(self.text(ix, rest, base, text))
-                .into_any_element(),
-            Kind::List {
-                indent,
-                marker,
-                task,
-                rest,
-            } => {
-                let marker = match task {
-                    Some(done) => div()
-                        .mt(px(6.))
-                        .size(px(14.))
-                        .rounded_sm()
+            .into_any_element()
+        } else {
+            self.text(ix, rest, base, color)
+        }
+    }
+
+    /// Bullet / number / checkbox column, with room before the text.
+    fn list_marker(
+        &self,
+        ix: usize,
+        marker: String,
+        task: Option<bool>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let p = palette();
+        let slot = div().w(px(28.)).h(px(LH)).flex_none().flex().items_center();
+        match task {
+            Some(done) => slot
+                .child(
+                    div()
+                        .size(px(16.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(4.))
                         .border_1()
-                        .border_color(p.accent)
-                        .when(done, |d| d.bg(p.accent))
+                        .border_color(if done { p.accent } else { c(0x8a8a8a) })
+                        .when(done, |d| {
+                            d.bg(p.accent).child(
+                                svg()
+                                    .path("icons/notes/check.svg")
+                                    .w(px(12.))
+                                    .h(px(12.))
+                                    .text_color(c(0xffffff)),
+                            )
+                        })
                         .cursor_pointer()
                         .on_mouse_down(
                             MouseButton::Left,
@@ -581,18 +623,66 @@ impl Editor {
                                 cx.stop_propagation();
                                 this.toggle_task(ix, cx);
                             }),
-                        )
-                        .into_any_element(),
-                    None => div().text_color(p.dim).child(marker).into_any_element(),
-                };
+                        ),
+                )
+                .into_any_element(),
+            None if marker == "•" => slot
+                .justify_center()
+                .child(div().size(px(6.)).rounded_full().bg(p.dim))
+                .into_any_element(),
+            None => slot.text_color(p.dim).child(marker).into_any_element(),
+        }
+    }
+
+    fn rendered(&self, ix: usize, editing: bool, cx: &mut Context<Self>) -> AnyElement {
+        let p = palette();
+        let text = c(0xdcddde);
+        let base = font(UI);
+        match markdown::classify(&self.lines[ix]) {
+            Kind::Heading(level, rest) => {
+                let size = BASE * HEADING[level - 1];
+                div()
+                    .pt(px(size * 0.3))
+                    .text_size(px(size))
+                    .line_height(px(size * 1.3))
+                    .child(self.body(ix, rest, base.bold(), text, editing, cx))
+                    .into_any_element()
+            }
+            Kind::Quote(rest) => div()
+                .border_l_2()
+                .border_color(p.accent)
+                .pl_4()
+                .child(self.body(ix, rest, base, text, editing, cx))
+                .into_any_element(),
+            Kind::List {
+                indent,
+                marker,
+                task,
+                rest,
+            } => {
                 let color = if task == Some(true) { p.dim } else { text };
                 div()
                     .flex()
-                    .pl(px(indent as f32 * 8.))
-                    .child(div().w(px(24.)).flex_shrink_0().child(marker))
-                    .child(div().flex_1().child(self.text(ix, rest, base, color)))
+                    .pl(px(indent as f32 * 10.))
+                    .child(self.list_marker(ix, marker, task, cx))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .pl(px(4.))
+                            .child(self.body(ix, rest, base, color, editing, cx)),
+                    )
                     .into_any_element()
             }
+            // Everything else is edited as plain source.
+            _ if editing => self.raw(ix, false, cx),
+            Kind::Blank => div().into_any_element(),
+            Kind::Rule => div()
+                .h(px(LH))
+                .flex()
+                .items_center()
+                .child(div().w_full().h_px().bg(c(0x444444)))
+                .into_any_element(),
             Kind::Image(url) if !url.contains("://") => {
                 let dir = self
                     .path
@@ -742,7 +832,8 @@ impl Editor {
         if ix == self.row {
             el.child(CaretLine {
                 editor: cx.entity(),
-                mono,
+                font: font(if mono { MONO } else { UI }),
+                start: 0,
             })
             .into_any_element()
         } else {
@@ -751,10 +842,28 @@ impl Editor {
     }
 
     fn wrap_row(&self, ix: usize, inner: AnyElement, cx: &mut Context<Self>) -> AnyElement {
+        let gutter = div()
+            .w(px(44.))
+            .flex_none()
+            .pr_3()
+            .h(px(LH))
+            .flex()
+            .items_center()
+            .justify_end()
+            .font_family(MONO)
+            .text_size(px(12.))
+            .text_color(if ix == self.row {
+                c(0xb5b5b5)
+            } else {
+                c(0x5a5a5a)
+            })
+            .child((ix + 1).to_string());
         div()
             .w_full()
-            .max_w(px(750.))
-            .px_6()
+            .max_w(px(800.))
+            .pr_6()
+            .flex()
+            .items_start()
             .flex_shrink_0()
             .min_h(px(LH))
             .when(self.all, |d| d.bg(rgba(0x7f6df240)))
@@ -776,7 +885,8 @@ impl Editor {
                     this.open_menu(ev.position, cx);
                 }),
             )
-            .child(inner)
+            .child(gutter)
+            .child(div().flex_1().min_w_0().child(inner))
             .into_any_element()
     }
 
@@ -807,11 +917,7 @@ impl Render for Editor {
                     if i == self.row {
                         caret_child = rows.len();
                     }
-                    let inner = if i == self.row {
-                        self.raw(i, false, cx)
-                    } else {
-                        self.rendered(i, cx)
-                    };
+                    let inner = self.rendered(i, i == self.row, cx);
                     rows.push(self.wrap_row(i, inner, cx));
                 }
                 Block::Fence(r) if r.contains(&self.row) => {
@@ -1058,8 +1164,11 @@ impl EntityInputHandler for Editor {
     ) -> Option<Bounds<Pixels>> {
         let layout = self.layout.as_ref()?;
         let range = self.range_from_utf16(&range_utf16);
-        let a = layout.position_for_index(range.start, self.lh)?;
-        let b = layout.position_for_index(range.end, self.lh).unwrap_or(a);
+        let h = self.drawn_head;
+        let a = layout.position_for_index(range.start.saturating_sub(h), self.lh)?;
+        let b = layout
+            .position_for_index(range.end.saturating_sub(h), self.lh)
+            .unwrap_or(a);
         let width = if b.y == a.y { b.x - a.x } else { px(0.) };
         Some(Bounds::new(
             point(bounds.left() + a.x, bounds.top() + a.y),
@@ -1081,23 +1190,30 @@ impl EntityInputHandler for Editor {
 /// The editable caret line: soft-wrapped text, selection, caret, IME registration.
 struct CaretLine {
     editor: Entity<Editor>,
-    mono: bool,
+    font: Font,
+    /// Byte offset in the line where the drawn text starts (after a hidden marker).
+    start: usize,
 }
 
 impl CaretLine {
     fn shape_input(&self, window: &Window, cx: &App) -> (SharedString, Vec<TextRun>) {
         let editor = self.editor.read(cx);
-        let text: SharedString = editor.line().to_string().into();
+        let h = self.start.min(editor.line().len());
+        let text: SharedString = editor.line()[h..].to_string().into();
         let style = window.text_style();
         let run = TextRun {
             len: text.len(),
-            font: if self.mono { font(MONO) } else { font(UI) },
+            font: self.font.clone(),
             color: style.color,
             background_color: None,
             underline: None,
             strikethrough: None,
         };
-        let runs = match &editor.marked {
+        let marked = editor
+            .marked
+            .clone()
+            .map(|m| m.start.saturating_sub(h)..m.end.saturating_sub(h));
+        let runs = match &marked {
             Some(m) => [
                 TextRun {
                     len: m.start,
@@ -1213,7 +1329,12 @@ impl Element for CaretLine {
             return;
         };
         let editor = self.editor.read(cx);
-        let (sel, cursor, all) = (editor.sel.clone(), editor.cursor(), editor.all);
+        let h = self.start;
+        let (sel, cursor, all) = (
+            editor.sel.start.saturating_sub(h)..editor.sel.end.saturating_sub(h),
+            editor.cursor().saturating_sub(h),
+            editor.all,
+        );
         let pos = |i: usize| {
             let p = line.position_for_index(i, lh).unwrap_or_default();
             point(bounds.left() + p.x, bounds.top() + p.y)
@@ -1255,6 +1376,7 @@ impl Element for CaretLine {
             editor.layout = Some(line);
             editor.bounds = Some(bounds);
             editor.lh = lh;
+            editor.drawn_head = h;
         });
     }
 }
