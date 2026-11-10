@@ -119,6 +119,19 @@ impl Root {
     }
 }
 
+/// Serves the whiteboard's embedded toolbar icons (Zed serves the same paths from its assets).
+struct Assets;
+
+impl gpui::AssetSource for Assets {
+    fn load(&self, path: &str) -> anyhow::Result<Option<std::borrow::Cow<'static, [u8]>>> {
+        Ok(whiteboard::icon_asset(path).map(std::borrow::Cow::Borrowed))
+    }
+
+    fn list(&self, _: &str) -> anyhow::Result<Vec<gpui::SharedString>> {
+        Ok(Vec::new())
+    }
+}
+
 fn show_error(e: anyhow::Error, window: &mut Window, cx: &mut App) {
     // Receiver dropped: the dialog only informs.
     let _ = window.prompt(PromptLevel::Critical, &format!("{e:#}"), None, &["OK"], cx);
@@ -144,7 +157,7 @@ impl Render for Root {
 }
 
 fn main() {
-    application().run(|cx: &mut App| {
+    application().with_assets(Assets).run(|cx: &mut App| {
         whiteboard::load_fonts(cx);
         cx.bind_keys([
             KeyBinding::new("ctrl-n", New, None),

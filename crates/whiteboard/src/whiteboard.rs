@@ -18,10 +18,11 @@ use std::{
 use anyhow::{Result, anyhow};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use gpui::{
-    App, Bounds, ClipboardEntry, Context, Corners, EventEmitter, ExternalPaths, FocusHandle,
-    Focusable, Hsla, Image, ImageFormat, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, PathBuilder, Pixels, Point, Render, Rgba, ScrollWheelEvent, SharedString,
-    TextAlign, TextRun, Window, actions, canvas, div, fill, font, point, prelude::*, px, rgb, size,
+    App, Bounds, ClipboardEntry, Context, Corners, Div, ElementId, EventEmitter, ExternalPaths,
+    FocusHandle, Focusable, Hsla, Image, ImageFormat, KeyDownEvent, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, PathBuilder, Pixels, Point, Render, Rgba, ScrollWheelEvent,
+    SharedString, Stateful, TextAlign, TextRun, Window, actions, canvas, div, fill, font, point,
+    prelude::*, px, rgb, size, svg,
 };
 #[cfg(feature = "zed")]
 use gpui::{Entity, EntityId, Task};
@@ -71,6 +72,44 @@ pub fn load_fonts(cx: &mut App) {
         log::error!("whiteboard: failed to load Excalifont: {e}");
     }
 }
+
+macro_rules! icons {
+    ($($name:literal),*) => {
+        /// Toolbar icons (Tabler Icons, MIT; `assets/icons/wb`). Zed serves them from its own
+        /// assets; the standalone app serves them through this.
+        pub fn icon_asset(path: &str) -> Option<&'static [u8]> {
+            let name = path.strip_prefix("icons/wb/")?;
+            $(if name == concat!($name, ".svg") {
+                return Some(include_bytes!(concat!("../../../assets/icons/wb/", $name, ".svg")));
+            })*
+            None
+        }
+    };
+}
+icons!(
+    "hand-stop",
+    "pointer",
+    "square",
+    "square-rotated",
+    "circle",
+    "arrow-narrow-right",
+    "line",
+    "pencil",
+    "letter-t",
+    "photo",
+    "eraser",
+    "lock",
+    "lock-open",
+    "menu-2",
+    "minus",
+    "plus",
+    "arrow-back-up",
+    "arrow-forward-up",
+    "trash",
+    "copy",
+    "help",
+    "note"
+);
 
 #[cfg(feature = "zed")]
 pub fn init(cx: &mut App) {
@@ -841,6 +880,7 @@ impl project::ProjectItem for BoardFile {
 
 #[derive(Clone, Copy, PartialEq)]
 enum Tool {
+    Hand,
     Select,
     Rectangle,
     Diamond,
@@ -849,23 +889,32 @@ enum Tool {
     Line,
     Draw,
     Text,
+    Image,
     Eraser,
 }
 
-const TOOLS: [(Tool, &str, &str); 9] = [
-    (Tool::Select, "Select", "v"),
-    (Tool::Rectangle, "Rect", "r"),
-    (Tool::Diamond, "Diamond", "d"),
-    (Tool::Ellipse, "Ellipse", "o"),
-    (Tool::Arrow, "Arrow", "a"),
-    (Tool::Line, "Line", "l"),
-    (Tool::Draw, "Draw", "p"),
-    (Tool::Text, "Text", "t"),
-    (Tool::Eraser, "Eraser", "e"),
+/// (tool, icon, letter key, number key) in Excalidraw's toolbar order.
+const TOOLS: [(Tool, &str, &str, &str); 11] = [
+    (Tool::Hand, "hand-stop", "h", ""),
+    (Tool::Select, "pointer", "v", "1"),
+    (Tool::Rectangle, "square", "r", "2"),
+    (Tool::Diamond, "square-rotated", "d", "3"),
+    (Tool::Ellipse, "circle", "o", "4"),
+    (Tool::Arrow, "arrow-narrow-right", "a", "5"),
+    (Tool::Line, "line", "l", "6"),
+    (Tool::Draw, "pencil", "p", "7"),
+    (Tool::Text, "letter-t", "t", "8"),
+    (Tool::Image, "photo", "", "9"),
+    (Tool::Eraser, "eraser", "e", "0"),
 ];
+const WIDTHS: [f32; 3] = [1., 2., 4.];
+const SLOPPINESS: [f32; 3] = [0., 1., 2.];
 
 enum Drag {
     None,
+    Pan {
+        last: Point<Pixels>,
+    },
     Move {
         last: V,
         moved: bool,
@@ -901,6 +950,11 @@ pub struct Whiteboard {
     tool: Tool,
     stroke: usize,
     fill: usize,
+    stroke_width: f32,
+    roughness: f32,
+    locked: bool,
+    menu: bool,
+    help: bool,
     selected: Vec<String>,
     editing: Option<String>,
     drag: Drag,
@@ -925,6 +979,11 @@ impl Whiteboard {
             tool: Tool::Select,
             stroke: 0,
             fill: 0,
+            stroke_width: 2.,
+            roughness: 1.,
+            locked: false,
+            menu: false,
+            help: false,
             selected: Vec::new(),
             editing: None,
             drag: Drag::None,
@@ -1413,6 +1472,11 @@ impl Whiteboard {
         let p = self.scene(ev.position);
         let stroke = STROKES[self.stroke];
         let kind = match self.tool {
+            Tool::Hand => {
+                self.drag = Drag::Pan { last: ev.position };
+                return;
+            }
+            Tool::Image => return,
             Tool::Select => {
                 let hit = self.hit(p);
                 if ev.click_count >= 2 {
@@ -1486,7 +1550,9 @@ impl Whiteboard {
             }
             Tool::Text => {
                 self.start_text(p, None);
-                self.tool = Tool::Select;
+                if !self.locked {
+                    self.tool = Tool::Select;
+                }
                 cx.notify();
                 return;
             }
@@ -1504,6 +1570,8 @@ impl Whiteboard {
             FILLS[self.fill]
         };
         let mut el = Element::new(kind, p, stroke, bg);
+        el.stroke_width = self.stroke_width;
+        el.roughness = self.roughness;
         el.points = match self.tool {
             Tool::Arrow | Tool::Line => vec![[0., 0.], [0., 0.]],
             Tool::Draw => vec![[0., 0.]],
@@ -1520,13 +1588,20 @@ impl Whiteboard {
         if ev.pressed_button != Some(MouseButton::Left) {
             return;
         }
+        if let Drag::Pan { last } = &mut self.drag {
+            let d = ev.position - *last;
+            *last = ev.position;
+            self.scroll[0] += f32::from(d.x) / self.zoom;
+            self.scroll[1] += f32::from(d.y) / self.zoom;
+            return cx.notify();
+        }
         let p = self.scene(ev.position);
         if matches!(self.drag, Drag::Erase) {
             self.erase(p);
             return self.changed(cx);
         }
         match &mut self.drag {
-            Drag::None | Drag::Erase => return,
+            Drag::None | Drag::Erase | Drag::Pan { .. } => return,
             Drag::Marquee { end, .. } => {
                 *end = p;
                 return cx.notify();
@@ -1615,7 +1690,7 @@ impl Whiteboard {
                     self.undo.pop();
                     self.selected.clear();
                 }
-                if self.tool != Tool::Draw {
+                if self.tool != Tool::Draw && !self.locked {
                     self.tool = Tool::Select;
                 }
             }
@@ -1674,19 +1749,13 @@ impl Whiteboard {
                     return;
                 }
             }
-            (false, "delete" | "backspace") => {
-                if !self.selected.is_empty() {
-                    self.checkpoint();
-                    for id in std::mem::take(&mut self.selected) {
-                        self.remove(&id);
-                    }
-                    self.changed(cx);
-                }
-            }
+            (false, "delete" | "backspace") => self.delete_selected(cx),
             (false, key) => {
-                if let Some((tool, ..)) = TOOLS.iter().find(|t| t.2 == key) {
-                    self.tool = *tool;
-                    cx.notify();
+                if let Some((tool, ..)) = TOOLS
+                    .iter()
+                    .find(|t| (!t.2.is_empty() && t.2 == key) || (!t.3.is_empty() && t.3 == key))
+                {
+                    self.pick_tool(*tool, window, cx);
                 } else {
                     return;
                 }
@@ -1694,6 +1763,69 @@ impl Whiteboard {
             _ => return,
         }
         cx.stop_propagation();
+    }
+
+    fn pick_tool(&mut self, tool: Tool, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_text(window, cx);
+        self.menu = false;
+        if tool != Tool::Image {
+            self.tool = tool;
+            return cx.notify();
+        }
+        let rx = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: true,
+            prompt: None,
+        });
+        cx.spawn(async move |this, cx| {
+            if let Ok(Ok(Some(paths))) = rx.await {
+                this.update(cx, |this, cx| this.add_image_files(&paths, cx))
+                    .ok();
+            }
+        })
+        .detach();
+    }
+
+    fn delete_selected(&mut self, cx: &mut Context<Self>) {
+        if self.selected.is_empty() {
+            return;
+        }
+        self.checkpoint();
+        for id in std::mem::take(&mut self.selected) {
+            self.remove(&id);
+        }
+        self.changed(cx);
+    }
+
+    fn clear(&mut self, cx: &mut Context<Self>) {
+        self.menu = false;
+        if self.elements.is_empty() {
+            return cx.notify();
+        }
+        self.checkpoint();
+        self.elements.clear();
+        self.selected.clear();
+        self.changed(cx);
+    }
+
+    fn set_style(&mut self, width: Option<f32>, rough: Option<f32>, cx: &mut Context<Self>) {
+        self.stroke_width = width.unwrap_or(self.stroke_width);
+        self.roughness = rough.unwrap_or(self.roughness);
+        if !self.selected.is_empty() {
+            self.checkpoint();
+            let sel = &self.selected;
+            for el in self
+                .elements
+                .iter_mut()
+                .filter(|e| sel.contains(&e.id) && e.kind != "image" && e.kind != "text")
+            {
+                el.stroke_width = width.unwrap_or(el.stroke_width);
+                el.roughness = rough.unwrap_or(el.roughness);
+            }
+            self.changed(cx);
+        }
+        cx.notify();
     }
 
     fn set_color(&mut self, stroke: Option<usize>, fill: Option<usize>, cx: &mut Context<Self>) {
@@ -1878,90 +2010,266 @@ impl Render for Whiteboard {
         )
         .size_full();
 
-        let button = |id: &'static str, label: SharedString, active: bool| {
-            div()
-                .id(id)
-                .px_2()
-                .py_1()
-                .rounded_md()
-                .text_sm()
-                .text_color(rgb(0xe3e3e8))
-                .when(active, |d| d.bg(rgb(0x403e6a)))
-                .hover(|d| d.bg(rgb(0x31303b)))
-                .child(label)
-        };
-        let swatch = |id: SharedString, hex: &str, active: bool| {
-            div()
-                .id(id)
-                .size_5()
-                .rounded_sm()
-                .border_1()
-                .border_color(if active { rgb(0xa8a5ff) } else { rgb(0x46464f) })
-                .when_some(color(hex, 100.), |d, c| d.bg(c))
-        };
-
-        let toolbar = div()
-            .occlude()
-            .flex()
+        // Excalidraw-style chrome (dark theme): islands over the dotted canvas.
+        let tool = self.tool;
+        let toolbar = island()
             .items_center()
+            .child(
+                icon_btn(
+                    "lock",
+                    if self.locked { "lock" } else { "lock-open" },
+                    self.locked,
+                    "",
+                )
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.locked = !this.locked;
+                    cx.notify();
+                })),
+            )
+            .child(divider())
+            .children(TOOLS.iter().map(|&(t, name, _, num)| {
+                icon_btn(
+                    SharedString::from(format!("tool-{name}")),
+                    name,
+                    tool == t,
+                    num,
+                )
+                .on_click(cx.listener(move |this, _, window, cx| this.pick_tool(t, window, cx)))
+            }));
+
+        let menu = div()
+            .flex_1()
+            .flex()
+            .flex_col()
+            .items_start()
             .gap_1()
-            .p_1()
-            .rounded_lg()
-            .bg(rgb(0x232329))
-            .border_1()
-            .border_color(rgb(0x31303b))
-            .children(TOOLS.iter().map(|&(tool, label, _)| {
-                button(label, label.into(), self.tool == tool).on_click(cx.listener(
-                    move |this, _, window, cx| {
-                        this.commit_text(window, cx);
-                        this.tool = tool;
+            .child(island().child(
+                icon_btn("menu", "menu-2", self.menu, "").on_click(cx.listener(
+                    |this, _, _, cx| {
+                        this.menu = !this.menu;
+                        this.help = false;
                         cx.notify();
                     },
-                ))
-            }))
-            .child(div().w_px().h_5().mx_1().bg(rgb(0x46464f)))
-            .children(STROKES.iter().enumerate().map(|(i, hex)| {
-                swatch(format!("stroke-{i}").into(), hex, self.stroke == i)
-                    .on_click(cx.listener(move |this, _, _, cx| this.set_color(Some(i), None, cx)))
-            }))
-            .child(div().w_px().h_5().mx_1().bg(rgb(0x46464f)))
-            .children(FILLS.iter().enumerate().map(|(i, hex)| {
-                swatch(format!("fill-{i}").into(), hex, self.fill == i)
-                    .on_click(cx.listener(move |this, _, _, cx| this.set_color(None, Some(i), cx)))
-            }))
-            .child(div().w_px().h_5().mx_1().bg(rgb(0x46464f)))
-            .child(
-                button("sticky", "Sticky note".into(), false)
-                    .on_click(cx.listener(|this, _, window, cx| this.add_sticky(window, cx))),
-            );
+                )),
+            ))
+            .when(self.menu, |d| {
+                d.child(
+                    island()
+                        .flex_col()
+                        .w(px(220.))
+                        .child(
+                            menu_item("menu-clear", "trash", "Reset the canvas")
+                                .on_click(cx.listener(|this, _, _, cx| this.clear(cx))),
+                        )
+                        .child(menu_item("menu-help", "help", "Help").on_click(cx.listener(
+                            |this, _, _, cx| {
+                                this.menu = false;
+                                this.help = true;
+                                cx.notify();
+                            },
+                        ))),
+                )
+            });
 
-        let zoom_control =
+        let sticky = div().flex_1().flex().justify_end().child(
             div()
+                .id("sticky")
                 .occlude()
-                .absolute()
-                .bottom_3()
-                .left_3()
                 .flex()
                 .items_center()
-                .p_1()
+                .gap_2()
+                .h(px(36.))
+                .px_3()
                 .rounded_lg()
                 .bg(rgb(0x232329))
                 .border_1()
-                .border_color(rgb(0x31303b))
-                .child(button("zoom-out", "\u{2212}".into(), false).on_click(
-                    cx.listener(|this, _, _, cx| this.zoom_to(this.zoom - 0.1, None, cx)),
-                ))
+                .border_color(rgb(0x34343a))
+                .hover(|d| d.bg(rgb(0x2e2d39)))
+                .text_size(px(14.))
+                .text_color(rgb(0xe3e3e8))
                 .child(
-                    button(
-                        "zoom-reset",
-                        format!("{:.0}%", self.zoom * 100.).into(),
-                        false,
-                    )
-                    .on_click(cx.listener(|this, _, _, cx| this.zoom_to(1., None, cx))),
+                    div()
+                        .w(px(14.))
+                        .h(px(14.))
+                        .rounded_sm()
+                        .bg(rgb(0xffec99))
+                        .border_1()
+                        .border_color(rgb(0xf08c00)),
                 )
-                .child(button("zoom-in", "+".into(), false).on_click(
-                    cx.listener(|this, _, _, cx| this.zoom_to(this.zoom + 0.1, None, cx)),
-                ));
+                .child("Sticky note")
+                .on_click(cx.listener(|this, _, window, cx| this.add_sticky(window, cx))),
+        );
+
+        let top = div()
+            .absolute()
+            .top_3()
+            .left_3()
+            .right_3()
+            .flex()
+            .items_start()
+            .font_family(UI_FONT)
+            .child(menu)
+            .child(toolbar)
+            .child(sticky);
+
+        let show_panel = matches!(
+            tool,
+            Tool::Rectangle
+                | Tool::Diamond
+                | Tool::Ellipse
+                | Tool::Arrow
+                | Tool::Line
+                | Tool::Draw
+                | Tool::Text
+        ) || !self.selected.is_empty();
+        let panel = show_panel.then(|| {
+            island()
+                .absolute()
+                .top(px(64.))
+                .left_3()
+                .w(px(196.))
+                .flex_col()
+                .gap_2()
+                .p_3()
+                .font_family(UI_FONT)
+                .child(label("Stroke"))
+                .child(row().children(STROKES.iter().enumerate().map(|(i, hex)| {
+                    swatch(format!("stroke-{i}").into(), hex, self.stroke == i).on_click(
+                        cx.listener(move |this, _, _, cx| this.set_color(Some(i), None, cx)),
+                    )
+                })))
+                .child(label("Background"))
+                .child(row().children(FILLS.iter().enumerate().map(|(i, hex)| {
+                    swatch(format!("fill-{i}").into(), hex, self.fill == i).on_click(
+                        cx.listener(move |this, _, _, cx| this.set_color(None, Some(i), cx)),
+                    )
+                })))
+                .child(label("Stroke width"))
+                .child(row().children(WIDTHS.iter().enumerate().map(|(i, &w)| {
+                    opt_btn(format!("width-{i}"), self.stroke_width == w)
+                        .child(glyph(w, 0.))
+                        .on_click(
+                            cx.listener(move |this, _, _, cx| this.set_style(Some(w), None, cx)),
+                        )
+                })))
+                .child(label("Sloppiness"))
+                .child(row().children(SLOPPINESS.iter().enumerate().map(|(i, &r)| {
+                    opt_btn(format!("rough-{i}"), self.roughness == r)
+                        .child(glyph(1.5, r * 1.5))
+                        .on_click(
+                            cx.listener(move |this, _, _, cx| this.set_style(None, Some(r), cx)),
+                        )
+                })))
+                .when(!self.selected.is_empty(), |d| {
+                    d.child(label("Actions")).child(
+                        row()
+                            .child(
+                                opt_btn("act-dup".to_string(), false)
+                                    .child(icon("copy"))
+                                    .on_click(cx.listener(|this, _, _, cx| this.duplicate(cx))),
+                            )
+                            .child(
+                                opt_btn("act-del".to_string(), false)
+                                    .child(icon("trash"))
+                                    .on_click(
+                                        cx.listener(|this, _, _, cx| this.delete_selected(cx)),
+                                    ),
+                            ),
+                    )
+                })
+        });
+
+        let zoom_label = format!("{:.0}%", self.zoom * 100.);
+        let bottom = div()
+            .absolute()
+            .bottom_3()
+            .left_3()
+            .right_3()
+            .flex()
+            .items_end()
+            .justify_between()
+            .font_family(UI_FONT)
+            .child(
+                div()
+                    .flex()
+                    .gap_2()
+                    .child(
+                        island()
+                            .items_center()
+                            .child(
+                                icon_btn("zoom-out", "minus", false, "").on_click(cx.listener(
+                                    |this, _, _, cx| this.zoom_to(this.zoom - 0.1, None, cx),
+                                )),
+                            )
+                            .child(
+                                div()
+                                    .id("zoom-reset")
+                                    .h(px(36.))
+                                    .min_w(px(52.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded_lg()
+                                    .text_size(px(13.))
+                                    .text_color(rgb(0xe3e3e8))
+                                    .hover(|d| d.bg(rgb(0x2e2d39)))
+                                    .child(zoom_label)
+                                    .on_click(
+                                        cx.listener(|this, _, _, cx| this.zoom_to(1., None, cx)),
+                                    ),
+                            )
+                            .child(icon_btn("zoom-in", "plus", false, "").on_click(cx.listener(
+                                |this, _, _, cx| this.zoom_to(this.zoom + 0.1, None, cx),
+                            ))),
+                    )
+                    .child(
+                        island()
+                            .items_center()
+                            .child(
+                                icon_btn("undo", "arrow-back-up", false, "").on_click(
+                                    cx.listener(|this, _, _, cx| this.history(false, cx)),
+                                ),
+                            )
+                            .child(
+                                icon_btn("redo", "arrow-forward-up", false, "")
+                                    .on_click(cx.listener(|this, _, _, cx| this.history(true, cx))),
+                            ),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .items_end()
+                    .gap_2()
+                    .when(self.help, |d| {
+                        d.child(
+                            island()
+                                .flex_col()
+                                .p_3()
+                                .w(px(280.))
+                                .text_size(px(13.))
+                                .text_color(rgb(0xe3e3e8))
+                                .children(HELP.iter().map(|&(keys, what)| {
+                                    div()
+                                        .w_full()
+                                        .flex()
+                                        .justify_between()
+                                        .child(what)
+                                        .child(div().text_color(rgb(0x8f8f99)).child(keys))
+                                })),
+                        )
+                    })
+                    .child(
+                        island().child(icon_btn("help", "help", self.help, "").on_click(
+                            cx.listener(|this, _, _, cx| {
+                                this.help = !this.help;
+                                this.menu = false;
+                                cx.notify();
+                            }),
+                        )),
+                    ),
+            );
 
         let root = div()
             .track_focus(&self.focus)
@@ -2014,18 +2322,173 @@ impl Render for Whiteboard {
                 this.add_image_files(paths.paths(), cx);
             }))
             .child(board)
-            .child(
+            .child(top)
+            .when_some(panel, |d, p| d.child(p))
+            .child(bottom)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Excalidraw-style UI pieces (dark theme colours from excalidraw's CSS).
+
+const UI_FONT: &str = "Segoe UI";
+
+const HELP: [(&str, &str); 14] = [
+    ("H", "Hand (pan)"),
+    ("V / 1", "Selection"),
+    ("R / 2", "Rectangle"),
+    ("D / 3", "Diamond"),
+    ("O / 4", "Ellipse"),
+    ("A / 5", "Arrow"),
+    ("L / 6", "Line"),
+    ("P / 7", "Draw"),
+    ("T / 8", "Text"),
+    ("9", "Insert image"),
+    ("E / 0", "Eraser"),
+    ("Ctrl+Z / Ctrl+Y", "Undo / Redo"),
+    ("Ctrl+D", "Duplicate"),
+    ("Ctrl+Scroll", "Zoom"),
+];
+
+fn island() -> Div {
+    div()
+        .occlude()
+        .flex()
+        .gap_1()
+        .p_1()
+        .rounded_lg()
+        .bg(rgb(0x232329))
+        .border_1()
+        .border_color(rgb(0x2e2d39))
+        .shadow_md()
+}
+
+fn divider() -> Div {
+    div().w_px().h(px(20.)).mx_1().bg(rgb(0x46464f))
+}
+
+fn icon(name: &str) -> gpui::Svg {
+    svg()
+        .path(SharedString::from(format!("icons/wb/{name}.svg")))
+        .flex_none()
+        .w(px(16.))
+        .h(px(16.))
+        .text_color(rgb(0xe3e3e8))
+}
+
+fn icon_btn(
+    id: impl Into<ElementId>,
+    name: &str,
+    active: bool,
+    num: &'static str,
+) -> Stateful<Div> {
+    div()
+        .id(id)
+        .relative()
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .w(px(36.))
+        .h(px(36.))
+        .rounded_lg()
+        .when(active, |d| d.bg(rgb(0x403e6a)))
+        .when(!active, |d| d.hover(|d| d.bg(rgb(0x2e2d39))))
+        .child(
+            icon(name)
+                .w(px(18.))
+                .h(px(18.))
+                .when(active, |s| s.text_color(rgb(0xe0dfff))),
+        )
+        .when(!num.is_empty(), |d| {
+            d.child(
                 div()
                     .absolute()
-                    .top_3()
-                    .left_0()
-                    .w_full()
-                    .flex()
-                    .justify_center()
-                    .child(toolbar),
+                    .bottom(px(1.))
+                    .right(px(4.))
+                    .text_size(px(9.))
+                    .text_color(rgb(0x8f8f99))
+                    .child(num),
             )
-            .child(zoom_control)
-    }
+        })
+}
+
+fn menu_item(id: &'static str, name: &str, text: &'static str) -> Stateful<Div> {
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .gap_2()
+        .h(px(32.))
+        .px_2()
+        .rounded_md()
+        .text_size(px(13.))
+        .text_color(rgb(0xe3e3e8))
+        .hover(|d| d.bg(rgb(0x2e2d39)))
+        .child(icon(name))
+        .child(text)
+}
+
+fn opt_btn(id: String, active: bool) -> Stateful<Div> {
+    div()
+        .id(SharedString::from(id))
+        .flex()
+        .items_center()
+        .justify_center()
+        .w(px(32.))
+        .h(px(32.))
+        .rounded_lg()
+        .bg(rgb(if active { 0x403e6a } else { 0x2e2d39 }))
+        .when(active, |d| d.border_1().border_color(rgb(0xa8a5ff)))
+        .hover(|d| d.bg(rgb(0x403e6a)))
+}
+
+fn row() -> Div {
+    div().flex().gap_1()
+}
+
+fn label(text: &'static str) -> Div {
+    div()
+        .text_size(px(12.))
+        .text_color(rgb(0xb8b8c0))
+        .child(text)
+}
+
+fn swatch(id: SharedString, hex: &str, active: bool) -> Stateful<Div> {
+    div()
+        .id(id)
+        .w(px(24.))
+        .h(px(24.))
+        .rounded_md()
+        .border_1()
+        .border_color(if active { rgb(0xa8a5ff) } else { rgb(0x46464f) })
+        .when(active, |d| d.border_2())
+        .when_some(color(hex, 100.), |d, c| d.bg(c))
+}
+
+/// A short stroke preview: `width` px thick, `wave` px of wobble (sloppiness).
+fn glyph(width: f32, wave: f32) -> impl IntoElement {
+    canvas(
+        |_, _, _| (),
+        move |b, _, window, _| {
+            let mut path = PathBuilder::stroke(px(width));
+            let (x0, w, y) = (b.origin.x + px(2.), b.size.width - px(4.), b.center().y);
+            for i in 0..=12 {
+                let t = i as f32 / 12.;
+                let q = point(x0 + w * t, y + px((t * PI * 2.).sin() * wave));
+                if i == 0 {
+                    path.move_to(q);
+                } else {
+                    path.line_to(q);
+                }
+            }
+            if let Ok(path) = path.build() {
+                window.paint_path(path, rgb(0xe3e3e8));
+            }
+        },
+    )
+    .w(px(24.))
+    .h(px(16.))
 }
 
 #[cfg(not(feature = "zed"))]
