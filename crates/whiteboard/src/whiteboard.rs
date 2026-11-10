@@ -18,19 +18,35 @@ use std::{
 use anyhow::{Result, anyhow};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use gpui::{
-    App, Bounds, ClipboardEntry, Context, Corners, Entity, EntityId, EventEmitter, ExternalPaths,
-    FocusHandle, Focusable, Hsla, Image, ImageFormat, KeyDownEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, PathBuilder, Pixels, Point, Render, Rgba, ScrollWheelEvent,
-    SharedString, Task, TextAlign, TextRun, Window, actions, canvas, div, fill, font, point,
-    prelude::*, px, rgb, size,
+    App, Bounds, ClipboardEntry, Context, Corners, EventEmitter, ExternalPaths, FocusHandle,
+    Focusable, Hsla, Image, ImageFormat, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, PathBuilder, Pixels, Point, Render, Rgba, ScrollWheelEvent, SharedString,
+    TextAlign, TextRun, Window, actions, canvas, div, fill, font, point, prelude::*, px, rgb, size,
 };
+#[cfg(feature = "zed")]
+use gpui::{Entity, EntityId, Task};
+#[cfg(feature = "zed")]
 use project::{Project, ProjectEntryId, ProjectPath};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
+#[cfg(feature = "zed")]
 use workspace::{
     Pane, Workspace,
     item::{Item, ItemBufferKind, ItemEvent, SaveOptions},
 };
+
+/// Standalone stand-in for Zed's `ItemEvent`: emitted when the title/dirty state changes.
+#[cfg(not(feature = "zed"))]
+#[derive(Clone, Copy, Debug)]
+pub enum ItemEvent {
+    UpdateTab,
+}
+
+/// Where the board is stored: a project item in Zed, a plain path standalone.
+#[cfg(feature = "zed")]
+type FileHandle = Entity<BoardFile>;
+#[cfg(not(feature = "zed"))]
+type FileHandle = PathBuf;
 
 actions!(
     whiteboard,
@@ -48,11 +64,17 @@ const STROKES: [&str; 5] = ["#1e1e1e", "#e03131", "#2f9e44", "#1971c2", "#f08c00
 const FILLS: [&str; 5] = ["transparent", "#ffc9c9", "#b2f2bb", "#a5d8ff", "#ffec99"];
 const STICKY: &str = "#ffec99";
 
-pub fn init(cx: &mut App) {
+/// Registers Excalifont with the text system.
+pub fn load_fonts(cx: &mut App) {
     let font_bytes: &'static [u8] = include_bytes!("../fonts/Excalifont-Regular.ttf");
     if let Err(e) = cx.text_system().add_fonts(vec![Cow::Borrowed(font_bytes)]) {
         log::error!("whiteboard: failed to load Excalifont: {e}");
     }
+}
+
+#[cfg(feature = "zed")]
+pub fn init(cx: &mut App) {
+    load_fonts(cx);
     workspace::register_project_item::<Whiteboard>(cx);
     cx.observe_new(|workspace: &mut Workspace, _, _| {
         workspace.register_action(|workspace, _: &OpenWhiteboard, window, cx| {
@@ -755,6 +777,7 @@ impl Painter<'_> {
 // ---------------------------------------------------------------------------
 // File as a project item.
 
+#[cfg(feature = "zed")]
 pub struct BoardFile {
     path: ProjectPath,
     abs_path: PathBuf,
@@ -770,6 +793,7 @@ fn read_doc(path: &std::path::Path) -> Result<Doc> {
     Ok(doc)
 }
 
+#[cfg(feature = "zed")]
 impl project::ProjectItem for BoardFile {
     fn try_open(
         project: &Entity<Project>,
@@ -868,7 +892,7 @@ enum Drag {
 
 pub struct Whiteboard {
     focus: FocusHandle,
-    file: Option<Entity<BoardFile>>,
+    file: Option<FileHandle>,
     elements: Vec<Element>,
     rest: Map<String, Value>,
     files: HashMap<String, ImageFile>,
@@ -889,7 +913,7 @@ pub struct Whiteboard {
 }
 
 impl Whiteboard {
-    fn new(file: Option<Entity<BoardFile>>, doc: Doc, cx: &mut Context<Self>) -> Self {
+    fn new(file: Option<FileHandle>, doc: Doc, cx: &mut Context<Self>) -> Self {
         let mut this = Self {
             focus: cx.focus_handle(),
             file,
@@ -1633,6 +1657,18 @@ impl Whiteboard {
                 cx.notify();
             }
             (true, "d") => self.duplicate(cx),
+            // In Zed these come from the global font-size / Unfollow actions.
+            #[cfg(not(feature = "zed"))]
+            (true, "=" | "+") => self.zoom_to(self.zoom + 0.1, None, cx),
+            #[cfg(not(feature = "zed"))]
+            (true, "-") => self.zoom_to(self.zoom - 0.1, None, cx),
+            #[cfg(not(feature = "zed"))]
+            (true, "0") => self.zoom_to(1., None, cx),
+            #[cfg(not(feature = "zed"))]
+            (false, "escape") => {
+                self.selected.clear();
+                cx.notify();
+            }
             (true, "v") => {
                 if !self.paste(cx) {
                     return;
@@ -1927,15 +1963,17 @@ impl Render for Whiteboard {
                     cx.listener(|this, _, _, cx| this.zoom_to(this.zoom + 0.1, None, cx)),
                 ));
 
-        div()
+        let root = div()
             .track_focus(&self.focus)
             .key_context("Whiteboard")
             .relative()
             .size_full()
             .overflow_hidden()
             .font_family(FONT)
-            .on_key_down(cx.listener(Self::key_down))
-            .on_action(cx.listener(|this, _: &workspace::Unfollow, window, cx| {
+            .on_key_down(cx.listener(Self::key_down));
+        #[cfg(feature = "zed")]
+        let root =
+            root.on_action(cx.listener(|this, _: &workspace::Unfollow, window, cx| {
                 if this.editing.is_some() {
                     this.commit_text(window, cx);
                 } else if !this.selected.is_empty() {
@@ -1956,12 +1994,10 @@ impl Render for Whiteboard {
                     this.zoom_to(this.zoom - 0.1, None, cx)
                 }),
             )
-            .on_action(
-                cx.listener(|this, _: &zed_actions::ResetBufferFontSize, _, cx| {
-                    this.zoom_to(1., None, cx)
-                }),
-            )
-            .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
+            .on_action(cx.listener(
+                |this, _: &zed_actions::ResetBufferFontSize, _, cx| this.zoom_to(1., None, cx),
+            ));
+        root.on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
             .on_mouse_move(cx.listener(Self::mouse_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::mouse_up))
             .on_scroll_wheel(cx.listener(|this, ev: &ScrollWheelEvent, _, cx| {
@@ -1992,6 +2028,51 @@ impl Render for Whiteboard {
     }
 }
 
+#[cfg(not(feature = "zed"))]
+impl Whiteboard {
+    /// An empty, unsaved board for the standalone app.
+    pub fn new_standalone(cx: &mut Context<Self>) -> Self {
+        Self::new(None, Doc::default(), cx)
+    }
+
+    /// Replaces the board with `path` (empty if `None` or the file doesn't exist yet).
+    pub fn open(&mut self, path: Option<PathBuf>, cx: &mut Context<Self>) -> Result<()> {
+        let doc = match &path {
+            Some(p) if p.exists() => read_doc(p)?,
+            _ => Doc::default(),
+        };
+        let focus = self.focus.clone();
+        *self = Self::new(path, doc, cx);
+        self.focus = focus;
+        cx.emit(ItemEvent::UpdateTab);
+        cx.notify();
+        Ok(())
+    }
+
+    pub fn path(&self) -> Option<&PathBuf> {
+        self.file.as_ref()
+    }
+
+    pub fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+
+    /// Writes the `.excalidraw` JSON to `path` and makes it the board's file.
+    pub fn save_to(
+        &mut self,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<()> {
+        self.commit_text(window, cx);
+        self.write(path.clone(), cx)?;
+        self.file = Some(path);
+        cx.emit(ItemEvent::UpdateTab);
+        Ok(())
+    }
+}
+
+#[cfg(feature = "zed")]
 impl Item for Whiteboard {
     type Event = ItemEvent;
 
@@ -2100,6 +2181,7 @@ impl Item for Whiteboard {
     }
 }
 
+#[cfg(feature = "zed")]
 impl workspace::item::ProjectItem for Whiteboard {
     type Item = BoardFile;
 

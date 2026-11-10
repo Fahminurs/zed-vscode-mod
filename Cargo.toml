@@ -145,6 +145,7 @@ members = [
     "crates/markdown_live",
     "crates/markdown_preview",
     "crates/whiteboard",
+    "crates/whiteboard_app",
     "crates/menu",
     "crates/mermaid_render",
     "crates/migrator",

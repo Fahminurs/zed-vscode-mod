@@ -12,14 +12,19 @@ workspace = true
 path = "src/whiteboard.rs"
 doctest = false
 
+[features]
+default = ["zed"]
+# Zed workspace glue (project item, tab, actions). Off for the standalone app.
+zed = ["dep:project", "dep:workspace", "dep:zed_actions"]
+
 [dependencies]
 anyhow.workspace = true
 base64.workspace = true
 gpui.workspace = true
 image.workspace = true
 log.workspace = true
-project.workspace = true
+project = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
-workspace.workspace = true
-zed_actions.workspace = true
+workspace = { workspace = true, optional = true }
+zed_actions = { workspace = true, optional = true }
