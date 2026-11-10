@@ -1382,6 +1382,23 @@ impl Render for Dock {
     }
 }
 
+/// Opens the standalone whiteboard (real Excalidraw, `whiteboard.exe` next to Zed's own exe),
+/// optionally with an `.excalidraw` file. It is a separate process, so it costs Zed no RAM and
+/// exits when its window closes.
+pub fn launch_whiteboard(path: Option<&std::path::Path>) {
+    let exe = std::env::current_exe().map(|zed| zed.with_file_name("whiteboard.exe"));
+    let result = exe.and_then(|exe| {
+        let mut cmd = std::process::Command::new(exe);
+        if let Some(path) = path {
+            cmd.arg(path);
+        }
+        cmd.spawn().map(drop)
+    });
+    if let Err(e) = result {
+        log::error!("could not start whiteboard.exe (put it next to Zed.exe): {e}");
+    }
+}
+
 /// VS Code style "Activity Bar": a vertical strip of panel icons shown at the far
 /// left of the window. Clicking an icon opens that panel in the dock; clicking the
 /// icon of the panel that is already open collapses the dock.
@@ -1508,14 +1525,7 @@ impl Render for ActivityBar {
                             .icon_color(Color::Muted)
                             .aria_label("Whiteboard")
                             .tooltip(Tooltip::text("Whiteboard"))
-                            .on_click(|_, window, cx| {
-                                // by name: workspace can't depend on the whiteboard crate
-                                if let Ok(action) =
-                                    cx.build_action("whiteboard::OpenWhiteboard", None)
-                                {
-                                    window.dispatch_action(action, cx);
-                                }
-                            }),
+                            .on_click(|_, _, _| launch_whiteboard(None)),
                     ),
             )
             .child(div().flex_1())

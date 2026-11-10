@@ -776,10 +776,6 @@ fn main() {
         git_ui::init(cx);
         feedback::init(cx);
         markdown_preview::init(cx);
-        file_previews::init(cx);
-        markdown_live::init(cx);
-        // after image_viewer/editor so .excalidraw opens as a whiteboard
-        whiteboard::init(cx);
         tabular_data_preview::init(cx);
         svg_preview::init(cx);
         onboarding::init(cx);

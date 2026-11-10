@@ -972,12 +972,12 @@ impl ProjectPanel {
                             let entry_id = entry.id;
                             let is_via_ssh = project.read(cx).is_via_remote_server();
 
-                            // Binary documents (Excel, PDF) and notebooks open as previews, loaded on click.
+                            // .excalidraw files open in the standalone whiteboard app.
                             let abs_path = worktree.read(cx).absolutize(&file_path);
-                            let ext = abs_path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
-                            if matches!(ext.as_str(), "xlsx" | "xlsm" | "xls" | "ods" | "pdf" | "ipynb")
-                                && file_previews::open_path(workspace, abs_path, window, cx)
+                            if !is_via_ssh
+                                && abs_path.extension().is_some_and(|e| e.eq_ignore_ascii_case("excalidraw"))
                             {
+                                workspace::launch_whiteboard(Some(&abs_path));
                                 return;
                             }
 
