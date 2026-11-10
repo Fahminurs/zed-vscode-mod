@@ -139,7 +139,7 @@ pub fn highlight(info: &str, code: &str) -> Vec<(Range<usize>, Hsla)> {
         let mut cursor = QueryCursor::new();
         let mut captures = cursor.captures(&loaded.query, tree.root_node(), code.as_bytes());
         while let Some((m, ix)) = captures.next() {
-            let cap = &m.captures[*ix];
+            let cap = &m.captures()[*ix];
             if let Some(color) = loaded.colors[cap.index as usize] {
                 spans.push((cap.node.byte_range(), m.pattern_index, color));
             }
