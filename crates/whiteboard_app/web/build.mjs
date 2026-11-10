@@ -11,7 +11,12 @@ const alwaysShowFill = {
       const src = readFileSync(args.path, "utf8");
       const re = /(\w+)\((\w+),(\w+)\)&&(\w+)\("div",\{children:(\w+)\("changeBackgroundColor"\)\}\),\w+&&\5\("changeFillStyle"\)/;
       if (!re.test(src)) throw new Error("always-show-fill: pattern not found");
-      const out = src.replace(re, '$1($2,$3)&&$4("div",{children:$5("changeBackgroundColor")}),$1($2,$3)&&$5("changeFillStyle")');
+      let out = src.replace(re, '$1($2,$3)&&$4("div",{children:$5("changeBackgroundColor")}),$1($2,$3)&&$5("changeFillStyle")');
+      // Canvas background picker: full colour grid (same palette as element Background).
+      const bgPalette = /topPicks:[\w$]+,palette:([\w$]+),type:"elementBackground"/.exec(out)?.[1];
+      const canvasRe = /palette:null,(topPicks:[\w$]+,label:[\w$]+\("labels\.canvasBackground"\))/;
+      if (!bgPalette || !canvasRe.test(out)) throw new Error("canvas-palette: pattern not found");
+      out = out.replace(canvasRe, `palette:${bgPalette},$1`);
       return { contents: out, loader: "js" };
     });
   },

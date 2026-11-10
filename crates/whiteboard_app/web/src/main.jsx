@@ -28,6 +28,8 @@ function syncDots(scrollX, scrollY, zoom) {
 
 // Our own chrome (page bg, dots, sticky corner) follows Excalidraw's theme via CSS vars.
 const setTheme = (theme) => (document.documentElement.dataset.theme = theme);
+// Excalidraw's own canvas colour, always fully see-through (#RRGGBBAA with alpha 0).
+const CLEAR = "#00000000";
 setTheme("dark");
 
 /**
@@ -212,12 +214,12 @@ function App() {
     const data = restore(JSON.parse(text), null, null);
     const a = api.current;
     const bg = data.appState?.viewBackgroundColor;
-    paintCanvas(bg && bg !== "transparent" ? bg : null);
+    paintCanvas(bg && bg !== "transparent" && bg !== CLEAR ? bg : null);
     a.updateScene({
       elements: data.elements,
       appState: {
         ...data.appState,
-        viewBackgroundColor: "transparent",
+        viewBackgroundColor: CLEAR,
         theme: a.getAppState().theme,
       },
       captureUpdate: "NEVER",
@@ -355,7 +357,7 @@ function App() {
     <>
     <StickyPalette at={palette} onPick={recolorSticky} />
     <Excalidraw
-      initialData={{ appState: { viewBackgroundColor: "transparent", theme: "dark" } }}
+      initialData={{ appState: { viewBackgroundColor: CLEAR, theme: "dark" } }}
       excalidrawAPI={(a) => {
         api.current = a;
         setReady(true);
@@ -363,11 +365,13 @@ function App() {
       onChange={(elements, appState) => {
         markDirty(getSceneVersion(elements) !== saved.current);
         const bg = appState.viewBackgroundColor;
-        if (bg && bg !== "transparent") {
-          // A canvas colour was picked: paint it under the dots (theme is left alone).
-          paintCanvas(bg, appState.theme);
+        if (bg && bg !== CLEAR) {
+          // A canvas colour was picked ("transparent" = back to the theme's own canvas): paint
+          // it under the dots, then park Excalidraw's canvas on the see-through CLEAR value so
+          // picking "transparent" later still registers as a change.
+          paintCanvas(bg === "transparent" ? null : bg, appState.theme);
           markDirty(true);
-          api.current?.updateScene({ appState: { viewBackgroundColor: "transparent" } });
+          api.current?.updateScene({ appState: { viewBackgroundColor: CLEAR } });
           return;
         }
         if (document.documentElement.dataset.theme !== appState.theme) {
