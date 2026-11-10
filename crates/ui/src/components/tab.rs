@@ -112,9 +112,10 @@ impl RenderOnce for Tab {
         let colors = cx.theme().colors();
         let (text_color, pill_bg) = match self.selected {
             false => (colors.text_muted, gpui::transparent_black()),
-            true => (colors.text, colors.element_selected),
+            // Neutral grey from the text color: some themes make element_selected accent-blue.
+            true => (colors.text, colors.text.opacity(0.12)),
         };
-        let hover_bg = colors.ghost_element_hover;
+        let hover_bg = colors.element_hover;
         let _ = self.position;
 
         let (start_slot, end_slot) = {

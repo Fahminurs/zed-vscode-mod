@@ -1527,6 +1527,27 @@ impl Render for ActivityBar {
                     .items_center()
                     .justify_center()
                     .child(
+                        IconButton::new("activity-bar-account", IconName::Person)
+                            .icon_size(IconSize::Medium)
+                            .icon_color(Color::Muted)
+                            .aria_label("Accounts")
+                            .tooltip(Tooltip::text("Accounts"))
+                            .on_click(|_, window, cx| {
+                                window.dispatch_action(
+                                    zed_actions::OpenAccountSettings.boxed_clone(),
+                                    cx,
+                                )
+                            }),
+                    ),
+            )
+            .child(
+                div()
+                    .w_full()
+                    .h(px(44.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
                         IconButton::new("activity-bar-settings", IconName::Settings)
                             .icon_size(IconSize::Medium)
                             .icon_color(Color::Muted)

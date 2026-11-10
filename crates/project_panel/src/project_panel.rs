@@ -6806,10 +6806,11 @@ impl ProjectPanel {
                                     .map(|(_, color)| color);
                                 let decorated =
                                     |glyph: SharedString,
+                                     size: IconSize,
                                      decoration_kind: IconDecorationKind,
                                      color: Color| {
                                         DecoratedIcon::new(
-                                            Icon::from_path(glyph).color(Color::Muted),
+                                            Icon::from_path(glyph).color(Color::Muted).size(size),
                                             Some(
                                                 IconDecoration::new(decoration_kind, bg_color, cx)
                                                     .group_name(Some(GROUP_NAME.into()))
@@ -6829,12 +6830,15 @@ impl ProjectPanel {
                                         Some((DiagnosticMark::OnIcon(decoration_kind), color)) => {
                                             div().child(decorated(
                                                 icon.clone(),
+                                                IconSize::Medium,
                                                 decoration_kind,
                                                 color,
                                             ))
                                         }
                                         _ => h_flex().child(
-                                            Icon::from_path(icon.to_string()).color(Color::Muted),
+                                            Icon::from_path(icon.to_string())
+                                                .color(Color::Muted)
+                                                .size(IconSize::Medium),
                                         ),
                                     })
                                 } else if let Some(DiagnosticMark::Standalone(icon_name)) =
@@ -6844,7 +6848,7 @@ impl ProjectPanel {
                                         diagnostic_severity,
                                     )
                                     .map_or(Color::Error, |(_, color)| color);
-                                    Some(h_flex().size(IconSize::default().rems()).child(
+                                    Some(h_flex().size(IconSize::Medium.rems()).child(
                                         Icon::new(icon_name).color(color).size(IconSize::Small),
                                     ))
                                 } else if chevron.is_some() {
@@ -6853,7 +6857,7 @@ impl ProjectPanel {
                                 } else {
                                     Some(
                                         h_flex()
-                                            .size(IconSize::default().rems())
+                                            .size(IconSize::Medium.rems())
                                             .invisible()
                                             .flex_none(),
                                     )
@@ -6864,7 +6868,12 @@ impl ProjectPanel {
                                         Some((
                                             DiagnosticMark::OnChevron(decoration_kind),
                                             color,
-                                        )) => decorated(chevron, decoration_kind, color),
+                                        )) => decorated(
+                                            chevron,
+                                            IconSize::default(),
+                                            decoration_kind,
+                                            color,
+                                        ),
                                         _ => Icon::from_path(chevron)
                                             .color(Color::Muted)
                                             .into_any_element(),
@@ -7218,8 +7227,9 @@ impl ProjectPanel {
                 (None, icon)
             }
             _ => {
+                // VS Code look: folders always draw chevron + folder icon.
                 let indicator = FileIcons::get_folder_indicators(
-                    settings.folder_indicator,
+                    settings::FolderIndicator::Both,
                     is_expanded,
                     entry.path.as_std_path(),
                     cx,
@@ -7240,8 +7250,6 @@ impl ProjectPanel {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> EntryDetails {
-        let folder_indicator = ProjectPanelSettings::get_global(cx).folder_indicator;
-
         let expanded_entry_ids = self
             .state
             .expanded_dir_ids
@@ -7306,8 +7314,7 @@ impl ProjectPanel {
 
         // Only `both` makes a directory two glyphs wide, leaving file icons under the
         // folder chevrons unless files hold that width open too.
-        let reserves_chevron_slot =
-            chevron.is_none() && folder_indicator.shows_chevron() && folder_indicator.shows_icon();
+        let reserves_chevron_slot = chevron.is_none();
 
         let filename_text_color =
             entry_git_aware_label_color(git_status, entry.is_ignored, is_marked);

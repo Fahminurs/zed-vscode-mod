@@ -148,9 +148,10 @@ impl Render for StatusBar {
                 }),
             )
             .w_full()
+            .items_stretch()
             .justify_between()
             .gap(DynamicSpacing::Base08.rems(cx))
-            .p(DynamicSpacing::Base04.rems(cx))
+            .pr(DynamicSpacing::Base04.rems(cx))
             .bg(cx.theme().colors().status_bar_background)
             .map(|el| match window.window_decorations() {
                 Decorations::Server => el,
@@ -181,7 +182,34 @@ impl Render for StatusBar {
                     .border_b(px(1.0))
                     .border_color(cx.theme().colors().status_bar_background),
             })
-            .child(self.render_left_tools(&sidebar, cx))
+            .child(
+                h_flex()
+                    .items_stretch()
+                    .min_w_0()
+                    .gap(DynamicSpacing::Base08.rems(cx))
+                    .child(
+                        div()
+                            .id("remote-indicator")
+                            .flex()
+                            .flex_shrink_0()
+                            .items_center()
+                            .px_2()
+                            .bg(cx.theme().colors().text_accent)
+                            .tooltip(Tooltip::text("Open a Remote Window"))
+                            .on_click(|_, window, cx| {
+                                window.dispatch_action(
+                                    Box::new(zed_actions::OpenRemote::default()),
+                                    cx,
+                                )
+                            })
+                            .child(
+                                Icon::new(IconName::Server)
+                                    .size(IconSize::Small)
+                                    .color(Color::Custom(gpui::white())),
+                            ),
+                    )
+                    .child(self.render_left_tools(&sidebar, cx)),
+            )
             .child(self.render_right_tools(&sidebar, cx))
     }
 }
@@ -194,6 +222,7 @@ impl StatusBar {
     ) -> impl IntoElement {
         h_flex()
             .gap_1()
+            .py(DynamicSpacing::Base04.rems(cx))
             .min_w_0()
             .overflow_x_hidden()
             .when(
@@ -213,6 +242,7 @@ impl StatusBar {
         h_flex()
             .flex_shrink_0()
             .gap_1()
+            .py(DynamicSpacing::Base04.rems(cx))
             .overflow_x_hidden()
             .children(
                 self.right_items

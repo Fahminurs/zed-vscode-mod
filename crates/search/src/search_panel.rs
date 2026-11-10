@@ -12,14 +12,14 @@ use file_icons::FileIcons;
 use futures::StreamExt as _;
 use gpui::{
     Action, App, AsyncWindowContext, ClickEvent, Context, Entity, EventEmitter, FocusHandle,
-    Focusable, Pixels, Render, SharedString, Subscription, Task, WeakEntity, Window, actions, px,
-    uniform_list,
+    Focusable, HighlightStyle, Pixels, Render, SharedString, StyledText, Subscription, Task,
+    WeakEntity, Window, actions, px, uniform_list,
 };
 use project::{
     Project, ProjectPath,
     search::{SearchQuery, SearchResult},
 };
-use ui::{HighlightedLabel, IconButtonShape, ListItem, Tooltip, prelude::*};
+use ui::{IconButtonShape, ListItem, Tooltip, prelude::*};
 use util::{ResultExt as _, paths::PathMatcher};
 use workspace::{
     Workspace,
@@ -39,8 +39,10 @@ actions!(
 const SEARCH_PANEL_KEY: &str = "SearchPanel";
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(300);
 const MAX_MATCHES: usize = 10_000;
-const PREVIEW_CONTEXT: usize = 40;
+const PREVIEW_CONTEXT: usize = 12;
 const PREVIEW_MAX: usize = 160;
+/// Shared width of the controls right of the Find / Replace inputs, so both inputs line up.
+const TRAILING_W: f32 = 76.;
 
 pub fn init(cx: &mut App) {
     cx.observe_new(|workspace: &mut Workspace, _window, _cx| {
@@ -55,7 +57,6 @@ struct MatchLine {
     row: u32,
     column: u32,
     preview: SharedString,
-    highlights: Vec<usize>,
     /// Byte range of the match inside `preview`.
     preview_hit: Range<usize>,
     range: Range<language::Anchor>,
@@ -657,16 +658,23 @@ impl SearchPanel {
                             .child(part(&line.preview[hit.end..]).truncate())
                             .into_any_element()
                     }
-                    None => HighlightedLabel::new(line.preview.clone(), line.highlights.clone())
-                        .size(LabelSize::Small)
-                        .single_line()
+                    None => div()
+                        .text_ui_sm(cx)
+                        .text_color(cx.theme().colors().text)
                         .truncate()
+                        .child(StyledText::new(line.preview.clone()).with_highlights([(
+                            line.preview_hit.clone(),
+                            HighlightStyle {
+                                background_color: Some(cx.theme().colors().search_match_background),
+                                ..Default::default()
+                            },
+                        )]))
                         .into_any_element(),
                 };
                 ListItem::new(("search-match", ix))
                     .indent_level(depth + 1)
                     .indent_step_size(px(20.))
-                    .child(label)
+                    .child(div().w_full().min_w_0().overflow_hidden().child(label))
                     .tooltip(Tooltip::text(format!("Line {}", line.row + 1)))
                     .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                         this.open_match(file_ix, match_ix, window, cx);
@@ -722,17 +730,12 @@ fn file_result(
         let line: String = buffer.text_for_range(line_start..line_end).collect();
         let (preview, preview_hit) =
             make_preview(&line, start - line_start, end.min(line_end) - line_start);
-        let highlights = preview[preview_hit.clone()]
-            .char_indices()
-            .map(|(ix, _)| preview_hit.start + ix)
-            .collect();
         let end_row = buffer.offset_to_point(end).row;
         let full_end = buffer.point_to_offset(text::Point::new(end_row, buffer.line_len(end_row)));
         matches.push(MatchLine {
             row: point.row,
             column: point.column,
             preview: preview.into(),
-            highlights,
             preview_hit,
             range: range.clone(),
             line: buffer.text_for_range(line_start..full_end).collect(),
@@ -949,9 +952,18 @@ impl Render for SearchPanel {
                                 h_flex()
                                     .gap_1()
                                     .child(self.render_input(&self.query_editor, cx))
-                                    .child(self.render_option(SearchOption::CaseSensitive, cx))
-                                    .child(self.render_option(SearchOption::WholeWord, cx))
-                                    .child(self.render_option(SearchOption::Regex, cx)),
+                                    .child(
+                                        h_flex()
+                                            .flex_none()
+                                            .w(px(TRAILING_W))
+                                            .justify_end()
+                                            .gap_1()
+                                            .child(
+                                                self.render_option(SearchOption::CaseSensitive, cx),
+                                            )
+                                            .child(self.render_option(SearchOption::WholeWord, cx))
+                                            .child(self.render_option(SearchOption::Regex, cx)),
+                                    ),
                             )
                             .when(self.show_replace, |this| {
                                 this.child(
@@ -959,28 +971,39 @@ impl Render for SearchPanel {
                                         .gap_1()
                                         .child(self.render_input(&self.replace_editor, cx))
                                         .child(
-                                            Button::new("preserve-case", "AB")
-                                                .label_size(LabelSize::XSmall)
-                                                .toggle_state(self.preserve_case)
-                                                .tooltip(Tooltip::text("Preserve Case"))
-                                                .on_click(cx.listener(
-                                                    |this, _: &ClickEvent, _, cx| {
-                                                        this.preserve_case = !this.preserve_case;
-                                                        cx.notify();
-                                                    },
-                                                )),
-                                        )
-                                        .child(
-                                            IconButton::new("replace-all", IconName::ReplaceAll)
-                                                .shape(IconButtonShape::Square)
-                                                .icon_size(IconSize::Small)
-                                                .disabled(!has_results)
-                                                .tooltip(Tooltip::text("Replace All"))
-                                                .on_click(cx.listener(
-                                                    |this, _: &ClickEvent, _, cx| {
-                                                        this.replace_all(cx)
-                                                    },
-                                                )),
+                                            h_flex()
+                                                .flex_none()
+                                                .w(px(TRAILING_W))
+                                                .justify_end()
+                                                .gap_1()
+                                                .child(
+                                                    Button::new("preserve-case", "AB")
+                                                        .label_size(LabelSize::XSmall)
+                                                        .toggle_state(self.preserve_case)
+                                                        .tooltip(Tooltip::text("Preserve Case"))
+                                                        .on_click(cx.listener(
+                                                            |this, _: &ClickEvent, _, cx| {
+                                                                this.preserve_case =
+                                                                    !this.preserve_case;
+                                                                cx.notify();
+                                                            },
+                                                        )),
+                                                )
+                                                .child(
+                                                    IconButton::new(
+                                                        "replace-all",
+                                                        IconName::ReplaceAll,
+                                                    )
+                                                    .shape(IconButtonShape::Square)
+                                                    .icon_size(IconSize::Small)
+                                                    .disabled(!has_results)
+                                                    .tooltip(Tooltip::text("Replace All"))
+                                                    .on_click(cx.listener(
+                                                        |this, _: &ClickEvent, _, cx| {
+                                                            this.replace_all(cx)
+                                                        },
+                                                    )),
+                                                ),
                                         ),
                                 )
                             }),

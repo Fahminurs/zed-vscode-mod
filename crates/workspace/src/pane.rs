@@ -3067,9 +3067,8 @@ impl Pane {
                     end_slot_tooltip_text = "Close Tab";
                     match show_close_button {
                         ShowCloseButton::Always => IconButton::new("close tab", IconName::Close),
-                        ShowCloseButton::Hover => {
-                            IconButton::new("close tab", IconName::Close).visible_on_hover("")
-                        }
+                        ShowCloseButton::Hover => IconButton::new("close tab", IconName::Close)
+                            .when(!is_active, |b| b.visible_on_hover("")),
                         ShowCloseButton::Hidden => return this,
                     }
                     .shape(IconButtonShape::Square)
@@ -3102,7 +3101,9 @@ impl Pane {
                 h_flex()
                     .id(("pane-tab-content", ix))
                     .gap_1()
-                    .when(self.stack_tabs, |this| this.max_w(px(96.)).overflow_hidden())
+                    .when(self.stack_tabs, |this| {
+                        this.max_w(px(96.)).overflow_hidden()
+                    })
                     .children(if let Some(icon) = icon {
                         Some(icon)
                     } else if !capability.editable() {
@@ -3709,9 +3710,7 @@ impl Pane {
                                             .detach();
                                         }),
                                     );
-                                for (ix, paths) in
-                                    read_tab_bookmarks(cx).into_iter().enumerate()
-                                {
+                                for (ix, paths) in read_tab_bookmarks(cx).into_iter().enumerate() {
                                     menu = menu.entry(
                                         format!("Open bookmark: Bookmark {}", ix + 1),
                                         None,

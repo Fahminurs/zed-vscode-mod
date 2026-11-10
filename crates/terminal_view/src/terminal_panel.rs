@@ -126,21 +126,53 @@ impl TerminalPanel {
     ) {
         let assistant_enabled = self.assistant_enabled;
         terminal_pane.update(cx, |pane, cx| {
-            pane.set_render_tab_bar_buttons(cx, move |pane, window, cx| {
+            pane.set_render_tab_bar_buttons(cx, move |pane, _window, cx| {
                 let split_context = pane
                     .active_item()
                     .and_then(|item| item.downcast::<TerminalView>())
                     .map(|terminal_view| terminal_view.read(cx).focus_handle.clone());
-                let has_focused_rename_editor = pane
-                    .active_item()
-                    .and_then(|item| item.downcast::<TerminalView>())
-                    .is_some_and(|view| view.read(cx).rename_editor_is_focused(window, cx));
-                if !pane.has_focus(window, cx)
-                    && !pane.context_menu_focused(window, cx)
-                    && !has_focused_rename_editor
-                {
-                    return (None, None);
-                }
+                // VS Code-style static panel header tabs; buttons are always shown (no focus gate).
+                let header_tab =
+                    |id: &'static str, label: &'static str, action: Option<&'static str>| {
+                        h_flex()
+                            .id(id)
+                            .px_2()
+                            .h_full()
+                            .border_b_1()
+                            .border_color(if action.is_none() {
+                                cx.theme().colors().text
+                            } else {
+                                gpui::transparent_black()
+                            })
+                            .child(Label::new(label).size(LabelSize::Small).color(
+                                if action.is_none() {
+                                    Color::Default
+                                } else {
+                                    Color::Muted
+                                },
+                            ))
+                            .when_some(action, |this, name| {
+                                this.cursor_pointer().on_click(move |_, window, cx| {
+                                    if let Ok(a) = cx.build_action(name, None) {
+                                        window.dispatch_action(a, cx)
+                                    }
+                                })
+                            })
+                    };
+                let left_children = h_flex()
+                    .h_full()
+                    .child(header_tab(
+                        "hdr-problems",
+                        "PROBLEMS",
+                        Some("diagnostics::Deploy"),
+                    ))
+                    .child(header_tab(
+                        "hdr-output",
+                        "OUTPUT",
+                        Some("dev::OpenLanguageServerLogs"),
+                    ))
+                    .child(header_tab("hdr-terminal", "TERMINAL", None))
+                    .into_any_element();
                 let focus_handle = pane.focus_handle(cx);
                 let more_focus_handle = focus_handle.clone();
                 let right_children = h_flex()
@@ -160,7 +192,7 @@ impl TerminalPanel {
                         PopoverMenu::new("terminal-tab-bar-popover-menu")
                             .trigger_with_tooltip(
                                 IconButton::new("new-terminal-chevron", IconName::ChevronDown)
-                                    .icon_size(IconSize::XSmall),
+                                    .icon_size(IconSize::Small),
                                 Tooltip::text("New…"),
                             )
                             .anchor(Anchor::TopRight)
@@ -255,7 +287,7 @@ impl TerminalPanel {
                     )
                     .into_any_element()
                     .into();
-                (None, right_children)
+                (Some(left_children), right_children)
             });
         });
     }
