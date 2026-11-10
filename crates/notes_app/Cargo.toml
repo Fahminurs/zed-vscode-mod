@@ -1,0 +1,22 @@
+[package]
+name = "notes_app"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+license = "GPL-3.0-or-later"
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "notes"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+gpui.workspace = true
+gpui_platform = { workspace = true, features = ["font-kit", "wayland", "x11"] }
+pulldown-cmark.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+gpui = { workspace = true, features = ["windows-manifest"] }

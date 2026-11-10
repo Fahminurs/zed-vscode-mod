@@ -153,6 +153,7 @@ members = [
     "crates/multi_buffer",
     "crates/net",
     "crates/node_runtime",
+    "crates/notes_app",
     "crates/notifications",
     "crates/oauth_callback_server",
     "crates/ollama",

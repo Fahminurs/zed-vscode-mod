@@ -1,0 +1,36 @@
+name: Build Notes (Windows)
+
+on:
+  push:
+    branches: [notes-app]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 300
+    env:
+      CARGO_PROFILE_RELEASE_DEBUG: "false"
+      CARGO_PROFILE_RELEASE_LTO: "false"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+      CARGO_INCREMENTAL: "0"
+      RUST_MIN_STACK: "67108864"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain from rust-toolchain.toml
+        run: rustup show
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: notes
+          cache-on-failure: true
+
+      - name: Build
+        run: cargo build --release -p notes_app
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Notes-windows
+          path: target/release/notes.exe
+          retention-days: 7
