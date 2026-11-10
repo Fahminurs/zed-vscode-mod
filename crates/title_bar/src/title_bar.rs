@@ -444,7 +444,13 @@ impl Render for TitleBar {
                 this.set_button_layout(button_layout);
                 this.set_children(row);
             });
-            self.platform_titlebar.clone().into_any_element()
+            // Horizontal divider between the title bar and the side bar / editor.
+            div()
+                .w_full()
+                .border_b_1()
+                .border_color(cx.theme().colors().border)
+                .child(self.platform_titlebar.clone())
+                .into_any_element()
         } else {
             self.platform_titlebar.update(cx, |this, _| {
                 this.set_button_layout(button_layout);

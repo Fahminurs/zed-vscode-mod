@@ -6667,6 +6667,7 @@ impl ProjectPanel {
                         ProjectPanelEntrySpacing::Standard => ListItemSpacing::ExtraDense,
                     })
                     .selectable(false)
+                    .when(is_root, |this| this.end_slot_fixed())
                     .when(
                         canonical_path.is_some()
                             || diagnostic_count.is_some()
@@ -6732,7 +6733,7 @@ impl ProjectPanel {
                                     .when(is_root, |this| {
                                         this.child(
                                             h_flex()
-                                                .visible_on_hover(GROUP_NAME)
+                                                .flex_none()
                                                 .child(
                                                     IconButton::new(
                                                         "root_new_file",
@@ -6788,6 +6789,10 @@ impl ProjectPanel {
                     )
                     .child(
                         h_flex()
+                            .min_w_0()
+                            .overflow_hidden()
+                            // a little air between the tree guide line and the highlight chip
+                            .ml_1()
                             .gap_1p5()
                             .px_1()
                             .rounded(px(6.))
@@ -6902,7 +6907,7 @@ impl ProjectPanel {
                             .child(if show_editor {
                                 h_flex().h_6().w_full().child(self.filename_editor.clone())
                             } else {
-                                h_flex().h_6().map(|this| {
+                                h_flex().h_6().min_w_0().overflow_hidden().map(|this| {
                                     match self.state.ancestors.get(&entry_id) {
                                         Some(folded_ancestors) => {
                                             this.children(self.render_folder_elements(
@@ -6925,6 +6930,7 @@ impl ProjectPanel {
                                         None => this.child(
                                             Label::new(file_name)
                                                 .single_line()
+                                                .truncate()
                                                 .color(filename_text_color)
                                                 .when(
                                                     settings.bold_folder_labels && kind.is_dir(),

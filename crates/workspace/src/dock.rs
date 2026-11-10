@@ -1447,7 +1447,7 @@ impl Render for ActivityBar {
                 Some(
                     div()
                         .w_full()
-                        .h(px(44.))
+                        .h(px(48.))
                         .flex()
                         .items_center()
                         .justify_center()
@@ -1459,7 +1459,8 @@ impl Render for ActivityBar {
                         })
                         .child(
                             IconButton::new(("activity-bar", i), icon)
-                                .icon_size(IconSize::Medium)
+                                .icon_size(IconSize::Custom(rems(1.5)))
+                                .size(ButtonSize::Large)
                                 .icon_color(if is_active {
                                     Color::Default
                                 } else {
@@ -1485,12 +1486,11 @@ impl Render for ActivityBar {
             .bg(bar_background)
             .border_r_1()
             .border_color(border)
-            .pt_1()
             .children(buttons)
             .child(
                 div()
                     .w_full()
-                    .h(px(44.))
+                    .h(px(48.))
                     .flex()
                     .items_center()
                     .justify_center()
@@ -1498,7 +1498,8 @@ impl Render for ActivityBar {
                     .border_color(inactive_marker)
                     .child(
                         IconButton::new("activity-bar-extensions", IconName::Blocks)
-                            .icon_size(IconSize::Medium)
+                            .icon_size(IconSize::Custom(rems(1.5)))
+                            .size(ButtonSize::Large)
                             .icon_color(Color::Muted)
                             .aria_label("Extensions")
                             .tooltip(Tooltip::text("Extensions"))
@@ -1513,7 +1514,7 @@ impl Render for ActivityBar {
             .child(
                 div()
                     .w_full()
-                    .h(px(44.))
+                    .h(px(48.))
                     .flex()
                     .items_center()
                     .justify_center()
@@ -1521,7 +1522,8 @@ impl Render for ActivityBar {
                     .border_color(inactive_marker)
                     .child(
                         IconButton::new("activity-bar-whiteboard", IconName::Pencil)
-                            .icon_size(IconSize::Medium)
+                            .icon_size(IconSize::Custom(rems(1.5)))
+                            .size(ButtonSize::Large)
                             .icon_color(Color::Muted)
                             .aria_label("Whiteboard")
                             .tooltip(Tooltip::text("Whiteboard"))
@@ -1532,13 +1534,14 @@ impl Render for ActivityBar {
             .child(
                 div()
                     .w_full()
-                    .h(px(44.))
+                    .h(px(48.))
                     .flex()
                     .items_center()
                     .justify_center()
                     .child(
                         IconButton::new("activity-bar-account", IconName::Person)
-                            .icon_size(IconSize::Medium)
+                            .icon_size(IconSize::Custom(rems(1.5)))
+                            .size(ButtonSize::Large)
                             .icon_color(Color::Muted)
                             .aria_label("Accounts")
                             .tooltip(Tooltip::text("Accounts"))
@@ -1553,13 +1556,14 @@ impl Render for ActivityBar {
             .child(
                 div()
                     .w_full()
-                    .h(px(44.))
+                    .h(px(48.))
                     .flex()
                     .items_center()
                     .justify_center()
                     .child(
                         IconButton::new("activity-bar-settings", IconName::Settings)
-                            .icon_size(IconSize::Medium)
+                            .icon_size(IconSize::Custom(rems(1.5)))
+                            .size(ButtonSize::Large)
                             .icon_color(Color::Muted)
                             .tooltip(Tooltip::text("Settings"))
                             .on_click(|_, window, cx| {

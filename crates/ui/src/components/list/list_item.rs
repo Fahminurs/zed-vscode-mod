@@ -56,6 +56,7 @@ pub struct ListItem {
     outlined: bool,
     rounded: bool,
     overflow_x: bool,
+    end_slot_fixed: bool,
     focused: Option<bool>,
     dock: Option<DockSide>,
     height: Option<DefiniteLength>,
@@ -92,6 +93,7 @@ impl ListItem {
             outlined: false,
             rounded: false,
             overflow_x: false,
+            end_slot_fixed: false,
             focused: None,
             dock: None,
             height: None,
@@ -256,6 +258,12 @@ impl ListItem {
 
     pub fn overflow_x(mut self) -> Self {
         self.overflow_x = true;
+        self
+    }
+
+    /// Keep the end slot whole and let the content shrink (and truncate) instead.
+    pub fn end_slot_fixed(mut self) -> Self {
+        self.end_slot_fixed = true;
         self
     }
 
@@ -426,6 +434,7 @@ impl RenderOnce for ListItem {
                             .flex_grow_1()
                             .flex_shrink_0()
                             .flex_basis(relative(0.25))
+                            .when(self.end_slot_fixed, |c| c.flex_shrink_1().min_w_0())
                             .gap(DynamicSpacing::Base06.rems(cx))
                             .map(|list_content| {
                                 if self.overflow_x {
@@ -439,9 +448,18 @@ impl RenderOnce for ListItem {
                     )
                     .when(self.end_slot.is_some(), |this| this.justify_between())
                     .map(|this| match self.end_slot_visibility {
-                        EndSlotVisibility::Always if let Some(end_slot) = self.end_slot => {
-                            this.child(h_flex().flex_shrink_1().overflow_hidden().child(end_slot))
-                        }
+                        EndSlotVisibility::Always if let Some(end_slot) = self.end_slot => this
+                            .child(
+                                h_flex()
+                                    .map(|e| {
+                                        if self.end_slot_fixed {
+                                            e.flex_none()
+                                        } else {
+                                            e.flex_shrink_1().overflow_hidden()
+                                        }
+                                    })
+                                    .child(end_slot),
+                            ),
                         EndSlotVisibility::OnHover if let Some(end_slot) = self.end_slot => this
                             .child(
                                 h_flex()

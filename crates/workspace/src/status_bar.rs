@@ -118,6 +118,9 @@ impl Render for StatusBar {
 
         h_flex()
             .id("status-bar")
+            // Horizontal divider between the workbench and the status bar (VS Code look).
+            .border_t_1()
+            .border_color(cx.theme().colors().border)
             .track_focus(&self.focus_handle)
             .key_context("StatusBar")
             // Expose the status bar as an ARIA toolbar so assistive technology
