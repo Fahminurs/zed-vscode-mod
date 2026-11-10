@@ -6,6 +6,13 @@ use gpui::{Font, FontStyle, FontWeight, Hsla, StrikethroughStyle, TextRun, px};
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 
 pub const MONO: &str = "Consolas";
+/// Obsidian's ==highlight== background (yellow, translucent).
+const HIGHLIGHT: gpui::Rgba = gpui::Rgba {
+    r: 1.,
+    g: 0.82,
+    b: 0.,
+    a: 0.4,
+};
 
 pub enum Kind<'a> {
     Blank,
@@ -123,6 +130,11 @@ pub fn is_fence(line: &str) -> bool {
     t.starts_with("```") || t.starts_with("~~~")
 }
 
+/// Language of a fence opener: "```python" → "python".
+pub fn fence_info(line: &str) -> &str {
+    line.trim_start().trim_start_matches(['`', '~']).trim()
+}
+
 fn is_row(line: &str) -> bool {
     line.trim_start().starts_with('|')
 }
@@ -187,6 +199,7 @@ pub fn inline(src: &str, base: &Font, color: Hsla, p: &Palette) -> Inline {
         links: Vec::new(),
     };
     let (mut bold, mut italic, mut strike, mut image) = (0, 0, 0, 0);
+    let (mut mark, mut comment) = (false, false);
     let mut link: Option<(usize, String)> = None;
     for event in Parser::new_ext(src, Options::ENABLE_STRIKETHROUGH) {
         let (s, code) = match event {
@@ -241,24 +254,54 @@ pub fn inline(src: &str, base: &Font, color: Hsla, p: &Palette) -> Inline {
         if code {
             font.family = MONO.into();
         }
-        out.runs.push(TextRun {
-            len: s.len(),
-            font,
-            color: if link.is_some() {
-                p.accent
-            } else if image > 0 {
-                p.dim
+        // Obsidian extras in plain text: ==highlight== and hidden %%comments%%.
+        let mut rest = s;
+        while !rest.is_empty() {
+            let next = if code {
+                None
             } else {
-                color
-            },
-            background_color: code.then_some(p.code_bg),
-            underline: None,
-            strikethrough: (strike > 0).then_some(StrikethroughStyle {
-                thickness: px(1.),
-                color: None,
-            }),
-        });
-        out.text.push_str(s);
+                ["==", "%%"]
+                    .iter()
+                    .filter_map(|m| rest.find(m).map(|i| (i, *m)))
+                    .min()
+            };
+            let (seg, marker) = match next {
+                Some((i, m)) => (&rest[..i], Some(m)),
+                None => (rest, None),
+            };
+            if !seg.is_empty() && !comment {
+                out.runs.push(TextRun {
+                    len: seg.len(),
+                    font: font.clone(),
+                    color: if link.is_some() {
+                        p.accent
+                    } else if image > 0 {
+                        p.dim
+                    } else {
+                        color
+                    },
+                    background_color: if code {
+                        Some(p.code_bg)
+                    } else if mark {
+                        Some(HIGHLIGHT.into())
+                    } else {
+                        None
+                    },
+                    underline: None,
+                    strikethrough: (strike > 0).then_some(StrikethroughStyle {
+                        thickness: px(1.),
+                        color: None,
+                    }),
+                });
+                out.text.push_str(seg);
+            }
+            match marker {
+                Some("==") if !comment => mark = !mark,
+                Some("%%") => comment = !comment,
+                _ => {}
+            }
+            rest = &rest[seg.len() + marker.map_or(0, str::len)..];
+        }
     }
     out
 }

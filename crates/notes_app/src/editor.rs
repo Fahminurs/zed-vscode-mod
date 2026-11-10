@@ -8,11 +8,16 @@ use gpui::{
     ElementInputHandler, Entity, EntityInputHandler, FocusHandle, Focusable, Font, GlobalElementId,
     Hsla, InteractiveText, KeyBinding, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, Pixels, Point, ScrollHandle, SharedString, Style, StyledText, TextRun,
-    UTF16Selection, UnderlineStyle, Window, WrappedLine, actions, div, fill, font, img, point,
-    prelude::*, px, relative, rgb, rgba, size,
+    UTF16Selection, UnderlineStyle, Window, WrappedLine, actions, anchored, deferred, div, fill,
+    font, img, point, prelude::*, px, relative, rgb, rgba, size, svg,
 };
 
+use crate::highlight;
+
+#[path = "menu.rs"]
+mod menu;
 use crate::markdown::{self, Block, Kind, MONO, Palette};
+pub use menu::icon_asset;
 
 actions!(
     notes_editor,
@@ -37,6 +42,10 @@ actions!(
         Paste,
         Undo,
         Redo,
+        Bold,
+        Italic,
+        InsertLink,
+        CloseMenu,
     ]
 );
 
@@ -82,6 +91,10 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-z", Undo, Some(CONTEXT)),
         KeyBinding::new("ctrl-y", Redo, Some(CONTEXT)),
         KeyBinding::new("ctrl-shift-z", Redo, Some(CONTEXT)),
+        KeyBinding::new("ctrl-b", Bold, Some(CONTEXT)),
+        KeyBinding::new("ctrl-i", Italic, Some(CONTEXT)),
+        KeyBinding::new("ctrl-k", InsertLink, Some(CONTEXT)),
+        KeyBinding::new("escape", CloseMenu, Some(CONTEXT)),
     ]);
 }
 
@@ -111,6 +124,7 @@ pub struct Editor {
     scroll: ScrollHandle,
     reveal: bool,
     title: String,
+    menu: Option<menu::Menu>,
 }
 
 impl Editor {
@@ -136,6 +150,7 @@ impl Editor {
             scroll: ScrollHandle::new(),
             reveal: false,
             title: String::new(),
+            menu: None,
         }
     }
 
@@ -453,6 +468,7 @@ impl Editor {
         cx: &mut Context<Self>,
     ) {
         window.focus(&self.focus, cx);
+        self.menu = None;
         if ev.modifiers.control {
             return; // ctrl-click is for links
         }
@@ -595,13 +611,72 @@ impl Editor {
         }
     }
 
-    fn fence(&self, r: Range<usize>) -> AnyElement {
-        let end = if r.len() > 1 && markdown::is_fence(&self.lines[r.end - 1]) {
+    /// Last body line of the fence block `r` (exclusive), i.e. without the closing ```.
+    fn fence_end(&self, r: &Range<usize>) -> usize {
+        if r.len() > 1 && markdown::is_fence(&self.lines[r.end - 1]) {
             r.end - 1
         } else {
             r.end
+        }
+    }
+
+    /// Syntax-coloured text runs for every body line of the fence block `r`.
+    fn fence_runs(&self, r: &Range<usize>) -> Vec<Vec<TextRun>> {
+        let info = markdown::fence_info(&self.lines[r.start]);
+        let body = &self.lines[r.start + 1..self.fence_end(r)];
+        let code = body.join("\n");
+        let spans = highlight::highlight(info, &code);
+        let mono = font(MONO);
+        let run = |len: usize, color: Hsla| TextRun {
+            len,
+            font: mono.clone(),
+            color,
+            background_color: None,
+            underline: None,
+            strikethrough: None,
         };
+        let plain = c(0xd4d4d4);
+        let mut offset = 0;
+        body.iter()
+            .map(|line| {
+                let (s, e) = (offset, offset + line.len());
+                offset = e + 1;
+                let mut runs = Vec::new();
+                let mut pos = s;
+                for (range, color) in spans.iter().filter(|(r, _)| r.end > s && r.start < e) {
+                    let (a, b) = (range.start.max(s), range.end.min(e));
+                    if a > pos {
+                        runs.push(run(a - pos, plain));
+                    }
+                    if b > a.max(pos) {
+                        runs.push(run(b - a.max(pos), *color));
+                        pos = b;
+                    }
+                }
+                if e > pos {
+                    runs.push(run(e - pos, plain));
+                }
+                runs
+            })
+            .collect()
+    }
+
+    fn code_line(line: &str, runs: Vec<TextRun>) -> AnyElement {
+        if line.is_empty() {
+            return div().min_h(px(20.)).into_any_element();
+        }
         div()
+            .min_h(px(20.))
+            .child(StyledText::new(line.to_string()).with_runs(runs))
+            .into_any_element()
+    }
+
+    fn fence(&self, r: Range<usize>) -> AnyElement {
+        let info = markdown::fence_info(&self.lines[r.start]).to_string();
+        let end = self.fence_end(&r);
+        let runs = self.fence_runs(&r);
+        div()
+            .relative()
             .my_1()
             .p_3()
             .rounded_md()
@@ -609,10 +684,23 @@ impl Editor {
             .font_family(MONO)
             .text_size(px(14.))
             .line_height(px(20.))
+            .when(!info.is_empty(), |d| {
+                d.child(
+                    div()
+                        .absolute()
+                        .top_1()
+                        .right_2()
+                        .font_family(UI)
+                        .text_size(px(11.))
+                        .text_color(palette().dim)
+                        .child(info),
+                )
+            })
             .children(
                 self.lines[r.start + 1..end]
                     .iter()
-                    .map(|l| div().min_h(px(20.)).child(l.clone())),
+                    .zip(runs)
+                    .map(|(l, runs)| Self::code_line(l, runs)),
             )
             .into_any_element()
     }
@@ -676,6 +764,18 @@ impl Editor {
                     this.click(ix, ev, window, cx)
                 }),
             )
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, ev: &MouseDownEvent, window, cx| {
+                    window.focus(&this.focus, cx);
+                    let ix = ix.min(this.lines.len() - 1);
+                    if ix != this.row {
+                        this.set_caret(ix, usize::MAX, cx);
+                    }
+                    cx.stop_propagation();
+                    this.open_menu(ev.position, cx);
+                }),
+            )
             .child(inner)
             .into_any_element()
     }
@@ -714,13 +814,34 @@ impl Render for Editor {
                     };
                     rows.push(self.wrap_row(i, inner, cx));
                 }
-                Block::Fence(r) | Block::Table(r) if r.contains(&self.row) => {
-                    let mono = markdown::is_fence(&self.lines[r.start]);
+                Block::Fence(r) if r.contains(&self.row) => {
+                    let runs = self.fence_runs(&r);
+                    let body = r.start + 1..self.fence_end(&r);
+                    for i in r.clone() {
+                        if i == self.row {
+                            caret_child = rows.len();
+                        }
+                        let inner = if i != self.row && body.contains(&i) {
+                            div()
+                                .font_family(MONO)
+                                .text_size(px(14.))
+                                .child(Self::code_line(
+                                    &self.lines[i],
+                                    runs[i - body.start].clone(),
+                                ))
+                                .into_any_element()
+                        } else {
+                            self.raw(i, true, cx)
+                        };
+                        rows.push(self.wrap_row(i, inner, cx));
+                    }
+                }
+                Block::Table(r) if r.contains(&self.row) => {
                     for i in r {
                         if i == self.row {
                             caret_child = rows.len();
                         }
-                        let inner = self.raw(i, mono, cx);
+                        let inner = self.raw(i, false, cx);
                         rows.push(self.wrap_row(i, inner, cx));
                     }
                 }
@@ -781,6 +902,24 @@ impl Render for Editor {
             .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(|this, _: &Undo, _, cx| this.restore(true, cx)))
             .on_action(cx.listener(|this, _: &Redo, _, cx| this.restore(false, cx)))
+            .on_action(cx.listener(|this, _: &Bold, _, cx| this.wrap("**", "**", cx)))
+            .on_action(cx.listener(|this, _: &Italic, _, cx| this.wrap("*", "*", cx)))
+            .on_action(cx.listener(|this, _: &InsertLink, window, cx| {
+                this.run_cmd(menu::Cmd::ExternalLink, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &CloseMenu, _, cx| this.close_menu(cx)))
+            // Any click outside the menu closes it (the menu itself occludes the page).
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseDownEvent, _, cx| this.close_menu(cx)),
+            )
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|this, ev: &MouseDownEvent, window, cx| {
+                    window.focus(&this.focus, cx);
+                    this.open_menu(ev.position, cx);
+                }),
+            )
             .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
                 if this.selecting && ev.pressed_button == Some(MouseButton::Left) {
                     let col = this.index_at(ev.position);
@@ -813,6 +952,7 @@ impl Render for Editor {
                         ),
                     ),
             )
+            .children(self.render_menu(cx))
     }
 }
 

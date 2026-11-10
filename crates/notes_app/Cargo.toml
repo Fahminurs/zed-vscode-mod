@@ -17,6 +17,18 @@ anyhow.workspace = true
 gpui.workspace = true
 gpui_platform = { workspace = true, features = ["font-kit", "wayland", "x11"] }
 pulldown-cmark.workspace = true
+# Code-block colours: same grammars and highlight queries as Zed.
+tree-sitter.workspace = true
+tree-sitter-bash.workspace = true
+tree-sitter-c.workspace = true
+tree-sitter-cpp.workspace = true
+tree-sitter-css.workspace = true
+tree-sitter-go.workspace = true
+tree-sitter-json.workspace = true
+tree-sitter-python.workspace = true
+tree-sitter-rust.workspace = true
+tree-sitter-typescript.workspace = true
+tree-sitter-yaml.workspace = true
 
 [target.'cfg(target_os = "windows")'.dependencies]
 gpui = { workspace = true, features = ["windows-manifest"] }

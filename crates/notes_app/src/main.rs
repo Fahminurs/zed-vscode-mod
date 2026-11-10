@@ -3,6 +3,7 @@
 //! Standalone live-preview Markdown editor.
 
 mod editor;
+mod highlight;
 mod markdown;
 
 use std::path::PathBuf;
@@ -131,8 +132,21 @@ impl Render for Root {
     }
 }
 
+/// Serves the editor's embedded menu icons.
+struct Assets;
+
+impl gpui::AssetSource for Assets {
+    fn load(&self, path: &str) -> anyhow::Result<Option<std::borrow::Cow<'static, [u8]>>> {
+        Ok(editor::icon_asset(path).map(std::borrow::Cow::Borrowed))
+    }
+
+    fn list(&self, _: &str) -> anyhow::Result<Vec<gpui::SharedString>> {
+        Ok(Vec::new())
+    }
+}
+
 fn main() {
-    application().run(|cx: &mut App| {
+    application().with_assets(Assets).run(|cx: &mut App| {
         editor::bind_keys(cx);
         cx.bind_keys([
             KeyBinding::new("ctrl-n", New, None),
