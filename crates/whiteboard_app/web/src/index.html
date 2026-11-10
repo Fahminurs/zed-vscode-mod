@@ -1,0 +1,58 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Whiteboard</title>
+    <link rel="stylesheet" href="/main.css" />
+    <style>
+      html,
+      body,
+      #root {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background-color: #121212;
+      }
+      #root {
+        background-image: radial-gradient(rgba(255, 255, 255, 0.13) 1px, transparent 1.3px);
+        background-size: 20px 20px;
+      }
+      .excalidraw,
+      .excalidraw .excalidraw-container {
+        background: transparent !important;
+      }
+      .sticky-btn {
+        white-space: nowrap;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        height: 36px;
+        padding: 0 12px;
+        border-radius: 8px;
+        background: #232329;
+        color: #e3e3e8;
+        font: 500 14px Assistant, "Segoe UI", sans-serif;
+        border: 1px solid #34343a;
+        cursor: pointer;
+      }
+      .sticky-btn:hover {
+        background: #2e2d39;
+      }
+      .sticky-swatch {
+        width: 14px;
+        height: 14px;
+        border-radius: 3px;
+        background: #ffec99;
+        border: 1px solid #f08c00;
+      }
+    </style>
+    <script>
+      // Fonts are served offline by the Rust shell under /fonts/.
+      window.EXCALIDRAW_ASSET_PATH = location.origin + "/";
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/main.js"></script>
+  </body>
+</html>

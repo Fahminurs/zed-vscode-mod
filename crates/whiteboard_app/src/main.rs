@@ -1,187 +1,184 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-//! Standalone whiteboard: the `whiteboard` crate in its own window, without Zed.
+//! Standalone whiteboard: real Excalidraw (bundled in `web/dist`) in a native window.
+//! Usage: `whiteboard [file.excalidraw]`. The page talks to us through `window.ipc`.
 
-use std::path::PathBuf;
+use std::{borrow::Cow, path::PathBuf};
 
-use gpui::{
-    App, Bounds, Context, Entity, Focusable, KeyBinding, PathPromptOptions, PromptLevel,
-    Subscription, TitlebarOptions, Window, WindowBounds, WindowOptions, actions, div, prelude::*,
-    px, size,
+use include_dir::{Dir, include_dir};
+use rfd::{FileDialog, MessageButtons, MessageDialog, MessageDialogResult, MessageLevel};
+use serde_json::Value;
+use tao::{
+    dpi::LogicalSize,
+    event::{Event, WindowEvent},
+    event_loop::{ControlFlow, EventLoopBuilder},
+    window::WindowBuilder,
 };
-use gpui_platform::application;
-use whiteboard::{ItemEvent, Whiteboard};
+use wry::{
+    WebViewBuilder,
+    http::{Response, header::CONTENT_TYPE},
+};
 
-actions!(whiteboard_app, [New, Open, Save, SaveAs, Quit]);
+static WEB: Dir = include_dir!("$CARGO_MANIFEST_DIR/web/dist");
 
-struct Root {
-    board: Entity<Whiteboard>,
-    _sub: Subscription,
-}
-
-impl Root {
-    fn new(path: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let board = cx.new(Whiteboard::new_standalone);
-        let _sub = cx.subscribe_in(&board, window, |this, _, _: &ItemEvent, window, cx| {
-            this.update_title(window, cx)
-        });
-        board.focus_handle(cx).focus(window, cx);
-        let mut this = Self { board, _sub };
-        this.load(path, window, cx);
-        this
-    }
-
-    fn update_title(&self, window: &mut Window, cx: &App) {
-        let board = self.board.read(cx);
-        let name = board
-            .path()
-            .and_then(|p| p.file_name())
-            .map_or("Untitled".into(), |n| n.to_string_lossy());
-        let dirty = if board.is_dirty() { " •" } else { "" };
-        window.set_window_title(&format!("{name}{dirty} - Whiteboard"));
-    }
-
-    fn load(&mut self, path: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
-        if let Err(e) = self.board.update(cx, |b, cx| b.open(path, cx)) {
-            show_error(e, window, cx);
-        }
-    }
-
-    fn write(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
-        if let Err(e) = self.board.update(cx, |b, cx| b.save_to(path, window, cx)) {
-            show_error(e, window, cx);
-        }
-    }
-
-    fn save(&mut self, save_as: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let current = self.board.read(cx).path().cloned();
-        if let Some(path) = current.clone().filter(|_| !save_as) {
-            return self.write(path, window, cx);
-        }
-        let dir = current
-            .as_ref()
-            .and_then(|p| p.parent())
-            .map(PathBuf::from)
-            .or_else(|| std::env::current_dir().ok())
-            .unwrap_or_default();
-        let rx = cx.prompt_for_new_path(&dir, Some("Untitled.excalidraw"));
-        cx.spawn_in(window, async move |this, cx| {
-            if let Ok(Ok(Some(path))) = rx.await {
-                this.update_in(cx, |this, window, cx| this.write(path, window, cx))
-                    .ok();
-            }
-        })
-        .detach();
-    }
-
-    /// Runs `then` right away, or after the user agrees to drop unsaved changes.
-    fn discard_guard(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-        then: impl FnOnce(&mut Self, &mut Window, &mut Context<Self>) + 'static,
-    ) {
-        if !self.board.read(cx).is_dirty() {
-            return then(self, window, cx);
-        }
-        let answer = window.prompt(
-            PromptLevel::Warning,
-            "Discard unsaved changes?",
-            None,
-            &["Discard", "Cancel"],
-            cx,
-        );
-        cx.spawn_in(window, async move |this, cx| {
-            if matches!(answer.await, Ok(0)) {
-                this.update_in(cx, |this, window, cx| then(this, window, cx))
-                    .ok();
-            }
-        })
-        .detach();
-    }
-
-    fn open_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let rx = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: false,
-            prompt: None,
-        });
-        cx.spawn_in(window, async move |this, cx| {
-            if let Ok(Ok(Some(paths))) = rx.await
-                && let Some(path) = paths.into_iter().next()
-            {
-                this.update_in(cx, |this, window, cx| this.load(Some(path), window, cx))
-                    .ok();
-            }
-        })
-        .detach();
+fn mime(path: &str) -> &'static str {
+    match path.rsplit('.').next() {
+        Some("html") => "text/html",
+        Some("js") => "text/javascript",
+        Some("css") => "text/css",
+        Some("woff2") => "font/woff2",
+        Some("json") => "application/json",
+        Some("svg") => "image/svg+xml",
+        Some("png") => "image/png",
+        _ => "application/octet-stream",
     }
 }
 
-/// Serves the whiteboard's embedded toolbar icons (Zed serves the same paths from its assets).
-struct Assets;
-
-impl gpui::AssetSource for Assets {
-    fn load(&self, path: &str) -> anyhow::Result<Option<std::borrow::Cow<'static, [u8]>>> {
-        Ok(whiteboard::icon_asset(path).map(std::borrow::Cow::Borrowed))
-    }
-
-    fn list(&self, _: &str) -> anyhow::Result<Vec<gpui::SharedString>> {
-        Ok(Vec::new())
-    }
+fn respond(status: u16, mime: &str, body: Cow<'static, [u8]>) -> Response<Cow<'static, [u8]>> {
+    Response::builder()
+        .status(status)
+        .header(CONTENT_TYPE, mime)
+        .body(body)
+        .unwrap()
 }
 
-fn show_error(e: anyhow::Error, window: &mut Window, cx: &mut App) {
-    // Receiver dropped: the dialog only informs.
-    let _ = window.prompt(PromptLevel::Critical, &format!("{e:#}"), None, &["OK"], cx);
+fn file_name(path: &Option<PathBuf>) -> String {
+    path.as_ref()
+        .and_then(|p| p.file_name())
+        .map_or("Untitled.excalidraw".into(), |n| n.to_string_lossy().into_owned())
 }
 
-impl Render for Root {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .size_full()
-            .on_action(cx.listener(|this, _: &New, window, cx| {
-                this.discard_guard(window, cx, |this, window, cx| this.load(None, window, cx))
-            }))
-            .on_action(cx.listener(|this, _: &Open, window, cx| {
-                this.discard_guard(window, cx, Self::open_dialog)
-            }))
-            .on_action(cx.listener(|this, _: &Save, window, cx| this.save(false, window, cx)))
-            .on_action(cx.listener(|this, _: &SaveAs, window, cx| this.save(true, window, cx)))
-            .on_action(cx.listener(|this, _: &Quit, window, cx| {
-                this.discard_guard(window, cx, |_, _, cx| cx.quit())
-            }))
-            .child(self.board.clone())
-    }
+fn title(path: &Option<PathBuf>, dirty: bool) -> String {
+    format!(
+        "{}{} - Whiteboard",
+        file_name(path),
+        if dirty { " •" } else { "" }
+    )
 }
 
-fn main() {
-    application().with_assets(Assets).run(|cx: &mut App| {
-        whiteboard::load_fonts(cx);
-        cx.bind_keys([
-            KeyBinding::new("ctrl-n", New, None),
-            KeyBinding::new("ctrl-o", Open, None),
-            KeyBinding::new("ctrl-s", Save, None),
-            KeyBinding::new("ctrl-shift-s", SaveAs, None),
-            KeyBinding::new("ctrl-q", Quit, None),
-        ]);
-        // ponytail: closing the window quits without the unsaved-changes prompt.
-        cx.on_window_closed(|cx, _| cx.quit()).detach();
-        let path = std::env::args().nth(1).map(PathBuf::from);
-        let bounds = Bounds::centered(None, size(px(1280.), px(800.)), cx);
-        cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                titlebar: Some(TitlebarOptions {
-                    title: Some("Whiteboard".into()),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            },
-            |window, cx| cx.new(|cx| Root::new(path, window, cx)),
-        )
+fn file_dialog() -> FileDialog {
+    FileDialog::new().add_filter("Excalidraw", &["excalidraw"])
+}
+
+fn discard_ok(dirty: bool) -> bool {
+    !dirty
+        || MessageDialog::new()
+            .set_title("Whiteboard")
+            .set_description("Discard unsaved changes?")
+            .set_level(MessageLevel::Warning)
+            .set_buttons(MessageButtons::YesNo)
+            .show()
+            == MessageDialogResult::Yes
+}
+
+fn error(e: impl ToString) {
+    MessageDialog::new()
+        .set_title("Whiteboard")
+        .set_description(e.to_string())
+        .set_level(MessageLevel::Error)
+        .show();
+}
+
+fn main() -> wry::Result<()> {
+    let mut path = std::env::args().nth(1).map(PathBuf::from);
+    // Served once at /__file so the page can load it on start.
+    let initial = path.as_ref().and_then(|p| std::fs::read(p).ok());
+
+    let event_loop = EventLoopBuilder::<String>::with_user_event().build();
+    let proxy = event_loop.create_proxy();
+    let window = WindowBuilder::new()
+        .with_title(title(&path, false))
+        .with_inner_size(LogicalSize::new(1280.0, 800.0))
+        .build(&event_loop)
         .expect("failed to open window");
-        cx.activate(true);
+
+    let webview = WebViewBuilder::new()
+        .with_custom_protocol("wb".into(), move |_, request| {
+            let p = request.uri().path().trim_start_matches('/');
+            if p == "__file" {
+                return match &initial {
+                    Some(b) => respond(200, "application/json", Cow::Owned(b.clone())),
+                    None => respond(404, "text/plain", Cow::Borrowed(&[])),
+                };
+            }
+            let p = if p.is_empty() { "index.html" } else { p };
+            match WEB.get_file(p) {
+                Some(f) => respond(200, mime(p), Cow::Borrowed(f.contents())),
+                None => respond(404, "text/plain", Cow::Borrowed(&[])),
+            }
+        })
+        .with_ipc_handler(move |request| {
+            let _ = proxy.send_event(request.into_body());
+        })
+        .with_background_color((18, 18, 18, 255))
+        .with_url("wb://localhost/")
+        .build(&window)?;
+
+    let mut dirty = false;
+    event_loop.run(move |event, _, control_flow| {
+        *control_flow = ControlFlow::Wait;
+        match event {
+            Event::UserEvent(msg) => {
+                let Ok(msg) = serde_json::from_str::<Value>(&msg) else {
+                    return;
+                };
+                match msg["type"].as_str() {
+                    Some("dirty") => dirty = msg["dirty"].as_bool().unwrap_or(false),
+                    Some("save") => {
+                        let target = path
+                            .clone()
+                            .filter(|_| msg["saveAs"].as_bool() != Some(true))
+                            .or_else(|| file_dialog().set_file_name(file_name(&path)).save_file());
+                        let Some(target) = target else { return };
+                        match std::fs::write(&target, msg["data"].as_str().unwrap_or_default()) {
+                            Ok(()) => {
+                                path = Some(target);
+                                dirty = false;
+                                let _ = webview.evaluate_script("window.__wb.saved()");
+                            }
+                            Err(e) => error(e),
+                        }
+                    }
+                    Some("open") => {
+                        if !discard_ok(dirty) {
+                            return;
+                        }
+                        let Some(p) = file_dialog().pick_file() else {
+                            return;
+                        };
+                        match std::fs::read_to_string(&p) {
+                            Ok(text) => {
+                                let js = format!(
+                                    "window.__wb.load({})",
+                                    serde_json::to_string(&text).unwrap_or_default()
+                                );
+                                let _ = webview.evaluate_script(&js);
+                                path = Some(p);
+                                dirty = false;
+                            }
+                            Err(e) => error(e),
+                        }
+                    }
+                    Some("new") => {
+                        if discard_ok(dirty) {
+                            let _ = webview.evaluate_script("window.__wb.reset()");
+                            path = None;
+                            dirty = false;
+                        }
+                    }
+                    _ => return,
+                }
+                window.set_title(&title(&path, dirty));
+            }
+            Event::WindowEvent {
+                event: WindowEvent::CloseRequested,
+                ..
+            } => {
+                if discard_ok(dirty) {
+                    *control_flow = ControlFlow::Exit;
+                }
+            }
+            _ => {}
+        }
     });
 }

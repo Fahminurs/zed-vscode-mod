@@ -26,6 +26,18 @@ jobs:
           key: whiteboard
           cache-on-failure: true
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: crates/whiteboard_app/web/package-lock.json
+
+      - name: Bundle Excalidraw (web/dist, embedded into the exe)
+        working-directory: crates/whiteboard_app/web
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+
       - name: Build
         run: cargo build --release -p whiteboard_app
 

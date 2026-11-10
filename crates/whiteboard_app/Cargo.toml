@@ -5,19 +5,16 @@ edition.workspace = true
 publish = false
 license = "GPL-3.0-or-later"
 
-[lints]
-workspace = true
+# Standalone whiteboard: real Excalidraw (web/, bundled offline into the exe) in a native
+# window via wry/WebView2. Runs only while open, so it costs no RAM when closed.
 
 [[bin]]
 name = "whiteboard"
 path = "src/main.rs"
 
 [dependencies]
-anyhow.workspace = true
-gpui.workspace = true
-gpui_platform = { workspace = true, features = ["font-kit", "wayland", "x11"] }
-# Path dep: `default-features = false` is ignored on a `workspace = true` dep.
-whiteboard = { path = "../whiteboard", default-features = false }
-
-[target.'cfg(target_os = "windows")'.dependencies]
-gpui = { workspace = true, features = ["windows-manifest"] }
+include_dir = "0.7"
+rfd = "0.18"
+serde_json.workspace = true
+tao = "0.37"
+wry = "0.57"

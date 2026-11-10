@@ -1,0 +1,31 @@
+// Bundles Excalidraw + the app into web/dist, which the Rust binary embeds (include_dir).
+import { build } from "esbuild";
+import { cpSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+
+rmSync("dist", { recursive: true, force: true });
+mkdirSync("dist/fonts", { recursive: true });
+
+await build({
+  entryPoints: ["src/main.jsx"],
+  bundle: true,
+  splitting: true,
+  format: "esm",
+  outdir: "dist",
+  chunkNames: "chunks/[name]-[hash]",
+  assetNames: "assets/[name]-[hash]",
+  minify: true,
+  jsx: "automatic",
+  conditions: ["production"],
+  loader: { ".woff2": "file", ".png": "file", ".svg": "file" },
+  define: {
+    "process.env.NODE_ENV": '"production"',
+    "process.env.IS_PREACT": '"false"',
+  },
+});
+
+cpSync("src/index.html", "dist/index.html");
+// Excalidraw loads its fonts from EXCALIDRAW_ASSET_PATH + "fonts/...". Xiaolai (CJK, 13 MB) is skipped.
+const fonts = "node_modules/@excalidraw/excalidraw/dist/prod/fonts";
+for (const f of readdirSync(fonts)) {
+  if (f !== "Xiaolai") cpSync(`${fonts}/${f}`, `dist/fonts/${f}`, { recursive: true });
+}
